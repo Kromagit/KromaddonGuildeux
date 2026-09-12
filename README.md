@@ -2,13 +2,19 @@
 
 KromaddonGuildeux affiche, de ton côté, le tableau des enchères que l'officier
 tient dans Kromaddon : qui a misé quoi, en MS ou en OS, qui a rand, qui a passé,
-et te donne trois boutons — **Mise Min**, **Rand**, **Passe** — qui tapent en
-`/raid` exactement ce que tu aurais tapé toi-même. Il te montre aussi ton
+et te donne de quoi miser — un champ **Montant** et son bouton **Miser**, les
+cases **MS / OS**, un champ **Max** pour une mise automatique, **Rand**,
+**Passe** — qui tapent en `/raid` exactement ce que tu aurais tapé toi-même. Il te montre aussi ton
 solde de KA, ton main, ton marqueur Naxx/Uldu et ton historique, en demandant
 à un officier par chuchotement (`?ka`), comme tu le ferais à la main.
 
-Il ne fait **rien tout seul** : aucun envoi en `/raid` sans un clic de toi,
-aucun chuchotement en combat, jamais plus d'un chuchotement toutes les 2 s.
+Il ne fait **rien tout seul** : aucun envoi en `/raid` sans un geste de toi
+(un clic, ou un **Max** que tu as tapé — la mise automatique est ta consigne,
+bornée par ton chiffre), aucun chuchotement en combat, jamais plus d'un
+chuchotement toutes les 2 s.
+
+Sous le titre, un rappel : Kromaddon contient un **bonus caché**, 5k KA à
+gagner, et l'indice du moment.
 
 ## Installer
 
@@ -33,11 +39,23 @@ au chat.
   qui a misé ce montant (deux messages dans la même seconde). Un bandeau jaune
   = le tableau ne suit plus l'officier : **c'est l'officier qui a raison**,
   l'addon ne corrige rien tout seul.
-  * **Mise Min** : premier clic, le bouton affiche « Miser N » (le montant
-    minimum valide au-dessus de la meilleure mise de ton palier) ; second
-    clic, il l'envoie. Le montant ne bouge pas entre les deux clics. Clic
-    droit pour annuler. Le petit bouton **Auto / MS / OS** choisit le palier
-    (Auto = celui de ta dernière mise, sinon celui par défaut de l'enchère).
+  * **Montant** + **Miser** : le champ propose le minimum requis (au-dessus
+    de la meilleure mise de ton palier) tant que tu n'y as rien tapé ; tu
+    peux mettre plus. Un clic sur Miser envoie « <montant> ms » ou
+    « <montant> os ». Sous le minimum, rien ne part et l'addon te dit
+    pourquoi.
+  * **MS / OS** : deux cases, une seule cochée. MS au début de chaque
+    enchère ; quand l'officier annonce « OS <objet> », OS se coche toute
+    seule. Tu peux changer quand tu veux : le palier envoyé est toujours
+    celui de la case cochée.
+  * **Max** : tape le maximum que tu es prêt à dépenser sur CET objet et
+    l'addon mise pour toi — le minimum requis, dans ton palier, 1,5 s après
+    chaque dépassement, jamais tant que tu es le meilleur de ton palier.
+    Dès que le minimum requis dépasse ton max (ou ton solde connu), il
+    s'arrête, le dit dans le chat et fait clignoter l'onglet : **à toi de
+    prendre le relais**. Le max ne survit pas à l'enchère : à la clôture, le
+    champ se vide — pas d'achat automatique sur l'objet suivant. Vide le
+    champ pour arrêter.
   * **Rand** : un `/roll 1-100`. Grisé dès que ton rand est compté ; réactivé
     si un départage te nomme.
   * **Passe** : envoie « passe ». Si tu es vainqueur pour le moment, l'officier
@@ -46,10 +64,13 @@ au chat.
   redemande (une fois par minute). Si tu lis « personnage non lié » : envoie
   `?ka #NomDeTonMain` à un officier, comme Kromaddon te le dit.
 * **Options** — la liste des loots annoncés dans la soirée avec des cases à
-  cocher ; « Ouvrir la fenêtre quand un butin est annoncé » et « Ouvrir sur
-  l'enchère d'un loot coché » (la fenêtre s'ouvre alors sur Enchères et
-  l'onglet clignote). Sans ces deux cases, la fenêtre ne s'ouvre jamais
-  seule. Échelle, verrou de position, et les **noms des rangs officier** de la
+  cocher ; « Ouvrir la fenêtre quand un butin est annoncé », « Ouvrir sur
+  l'enchère d'un loot coché » et « Ouvrir pour toutes les enchères » (la
+  fenêtre s'ouvre alors sur Enchères et l'onglet clignote). Sans ces cases, la
+  fenêtre ne s'ouvre jamais seule. « Masquer mes ?ka et leurs réponses dans le
+  chat » (cochée par défaut) : les chuchotements que l'addon envoie et les
+  réponses qu'il attend n'encombrent pas ton chat — ce que tu tapes toi-même,
+  les « Tu reçois N KA » et les rappels restent visibles. Échelle, verrou de position, et les **noms des rangs officier** de la
   guilde (c'est ce qui dit à l'addon qui est officier : les rangs viennent du
   roster, jamais d'un message). Tant que le roster n'est pas lu — ou si tu
   n'es pas dans la guilde — le chef de raid, ses assistants et le maître du

@@ -50,6 +50,8 @@ function EN:EnsureState()
             KG.Debug("MOI", KG.PlayerName(), text, "envoyé en " .. channel)
         end,
         roll = function() if RandomRoll then RandomRoll(1, 100) end end,
+        -- « prends le relais » : l'onglet clignote et le chat le dit.
+        alert = function(text) KG.FlashTab("encheres"); KG.Print(text) end,
     })
     return self.S
 end
@@ -224,7 +226,7 @@ function EN:Build(panel)
     -- Le tableau defilant
     local zone = KG.CreateZone(panel)
     zone:SetPoint("TOPLEFT", panel, "TOPLEFT", 2, headerY - 14)
-    zone:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -2, 56)
+    zone:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -2, KG.Boutons.ROWS_HEIGHT)
     local scroll = KG.NewScrollFrame(panel, "KromaddonGuildeuxEncheresScroll")
     scroll:SetPoint("TOPLEFT", zone, "TOPLEFT", 2, -2)
     scroll:SetPoint("BOTTOMRIGHT", zone, "BOTTOMRIGHT", -24, 2)

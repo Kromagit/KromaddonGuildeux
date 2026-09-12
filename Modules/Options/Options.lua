@@ -8,8 +8,8 @@
 -- verrou de la fenetre, les noms des rangs officier (§ 6.2), « Vider le cache
 -- ?ka », et le journal /kg debug.
 --
--- Sans « Ouvrir aux loots » ni « Ouvrir pour les loots cochés », la fenetre ne
--- s'ouvre JAMAIS seule.
+-- Sans « Ouvrir aux loots », « Ouvrir pour les loots cochés » ni « Ouvrir pour
+-- toutes les enchères » (12/09), la fenetre ne s'ouvre JAMAIS seule.
 --
 -- La logique des loots est pure (OP.New) et testee dans tests/options_loots.lua.
 --=============================================================================
@@ -80,10 +80,16 @@ function OP:IsChecked(id)
     return e ~= nil and e.checked == true
 end
 
--- A l'ouverture d'une enchere : si l'objet est coche, on ouvre l'onglet
--- Encheres et on le fait clignoter.
+-- A l'ouverture d'une enchere : si « toutes les enchères » est coche, ou si
+-- l'objet est coche dans la liste, on ouvre l'onglet Encheres et on le fait
+-- clignoter.
 function OP:AuctionOpened(e)
-    if not e or not e.itemID then return false end
+    if not e then return false end
+    if self.db.ouvrirToutesEncheres then
+        self.onEffect("open_encheres", e)
+        return true
+    end
+    if not e.itemID then return false end
     if not self.db.ouvrirPourCoches then return false end
     if not self:IsChecked(e.itemID) then return false end
     self.onEffect("open_encheres", e)
@@ -169,8 +175,12 @@ function OP:Build(panel)
         function() return KG.GetDB().ouvrirAuxLoots end, function(v) KG.GetDB().ouvrirAuxLoots = v end)
     W.cbCoches = CheckBox(panel, "Ouvrir sur l'enchère d'un loot coché", 4, -26,
         function() return KG.GetDB().ouvrirPourCoches end, function(v) KG.GetDB().ouvrirPourCoches = v end)
-    W.cbLock = CheckBox(panel, "Verrouiller la position", 4, -50,
+    W.cbToutes = CheckBox(panel, "Ouvrir pour toutes les enchères", 4, -50,
+        function() return KG.GetDB().ouvrirToutesEncheres end, function(v) KG.GetDB().ouvrirToutesEncheres = v end)
+    W.cbLock = CheckBox(panel, "Verrouiller la position", 4, -74,
         function() return KG.GetDB().verrouille end, function(v) KG.GetDB().verrouille = v end)
+    W.cbWisps = CheckBox(panel, "Masquer mes ?ka et leurs réponses dans le chat", 4, -98,
+        function() return KG.GetDB().masquerWisps end, function(v) KG.GetDB().masquerWisps = v end)
 
     -- Echelle
     local scaleLabel = KG.Label(panel, "Échelle")
@@ -193,9 +203,9 @@ function OP:Build(panel)
 
     -- Rangs officier
     local ranksLabel = KG.Label(panel, "Rangs officier (séparés par des virgules) :")
-    ranksLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -80)
+    ranksLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -128)
     local ranks = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-    ranks:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, -94)
+    ranks:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, -142)
     ranks:SetWidth(330); ranks:SetHeight(20)
     ranks:SetAutoFocus(false)
     ranks:SetText(table.concat(db.rangsOfficier or {}, ", "))
@@ -208,25 +218,25 @@ function OP:Build(panel)
     W.ranks = ranks
 
     local clear = KG.NewButton(panel, "Vider le cache ?ka", 120, 22)
-    clear:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -80, -92)
+    clear:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -80, -140)
     clear:SetScript("OnClick", function()
         if KG.KA and KG.KA.Logic then KG.KA:Logic():ClearCache() end
         KG.Print("cache ?ka vidé")
     end)
     local debug = KG.NewButton(panel, "/kg debug", 72, 22)
-    debug:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -4, -92)
+    debug:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -4, -140)
     debug:SetScript("OnClick", function() KG.HandleSlash("debug") end)
 
     -- Loots de la soiree
     local lootLabel = KG.Label(panel, "Loots annoncés cette soirée (coche ceux qui t'intéressent) :")
-    lootLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -122)
+    lootLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -170)
     do local c = KG.Theme.gold; lootLabel:SetTextColor(c[1], c[2], c[3]) end
     local forget = KG.NewButton(panel, "Vider", 60, 20)
-    forget:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -6, -118)
+    forget:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -6, -166)
     forget:SetScript("OnClick", function() OP:Logic():Clear(); OP:Refresh() end)
 
     local zone = KG.CreateZone(panel)
-    zone:SetPoint("TOPLEFT", panel, "TOPLEFT", 2, -138)
+    zone:SetPoint("TOPLEFT", panel, "TOPLEFT", 2, -186)
     zone:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -2, 24)
     local scroll = KG.NewScrollFrame(panel, "KromaddonGuildeuxLootsScroll")
     scroll:SetPoint("TOPLEFT", zone, "TOPLEFT", 4, -4)
@@ -274,7 +284,7 @@ end
 function OP:Refresh()
     local W = self.widgets
     if not W or not W.child then return end
-    for _, cb in ipairs({ W.cbLoots, W.cbCoches, W.cbLock }) do if cb and cb.Refresh then cb.Refresh() end end
+    for _, cb in ipairs({ W.cbLoots, W.cbCoches, W.cbToutes, W.cbLock, W.cbWisps }) do if cb and cb.Refresh then cb.Refresh() end end
     local list = self:Logic():List()
     local i = 0
     for _, e in ipairs(list) do

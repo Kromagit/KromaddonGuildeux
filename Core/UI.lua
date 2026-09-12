@@ -177,7 +177,7 @@ end
 -- La fenetre
 --=============================================================================
 
-KG.WIDTH, KG.HEIGHT = 560, 440
+KG.WIDTH, KG.HEIGHT = 560, 476
 
 local main = CreateFrame("Frame", "KromaddonGuildeuxFrame", UIParent)
 KG.Frame = main
@@ -241,6 +241,29 @@ title:SetPoint("TOPLEFT", main, "TOPLEFT", 12, -10)
 do local c = KG.Theme.gold; title:SetTextColor(c[1], c[2], c[3]) end
 KG.titleFS = title
 
+-- Le rappel du bonus cache (demande de Kroma, 12/09) : trois lignes sous le
+-- titre, au-dessus des onglets. L'indice est celui que Kromaddon annonce
+-- (KC:MaybeAnnounceMieuxHints, indice 1) ; la troisieme ligne est de Kroma.
+KG.BONUS_LINES = {
+    { "RAPPEL Kromaddon contient un bonus caché. 5k KA à gagner.", "gold" },
+    { "Indice 1 : Quelle est la différence entre un pigeon ?", "text" },
+    { "Cette question n'est pas une question, c'est un indice. Prochain indice début Octobre.", "muted" },
+}
+KG.bonusFS = {}
+do
+    local y = -26
+    for i, line in ipairs(KG.BONUS_LINES) do
+        local fs = KG.Label(main, line[1], "GameFontNormalSmall")
+        fs:SetPoint("TOPLEFT", main, "TOPLEFT", 12, y)
+        fs:SetPoint("RIGHT", main, "RIGHT", -28, 0)
+        fs:SetJustifyH("LEFT"); fs:SetWordWrap(false)
+        local c = KG.Theme[line[2]] or KG.Theme.text
+        fs:SetTextColor(c[1], c[2], c[3])
+        KG.bonusFS[i] = fs
+        y = y - 13
+    end
+end
+
 local close = CreateFrame("Button", nil, main, "UIPanelCloseButton")
 close:SetPoint("TOPRIGHT", main, "TOPRIGHT", -2, -2)
 close:SetScript("OnClick", function() main:Hide() end)
@@ -251,7 +274,8 @@ KG.tabs = {}
 KG.TAB_ORDER = { "encheres", "ka", "options" }
 KG.TAB_LABELS = { encheres = "Enchères", ka = "KA", options = "Options" }
 
-local TAB_TOP = -34
+-- Sous le titre (-10) et les trois lignes du bonus (-26, -39, -52).
+local TAB_TOP = -70
 local tabButtons = {}
 for i, key in ipairs(KG.TAB_ORDER) do
     local btn = KG.NewButton(main, KG.TAB_LABELS[key], 100, 22)

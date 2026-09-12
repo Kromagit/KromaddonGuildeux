@@ -31,6 +31,8 @@ function KG.Defaults()
         -- Options
         ouvrirAuxLoots = true,
         ouvrirPourCoches = true,
+        ouvrirToutesEncheres = false,
+        masquerWisps = true,   -- mes « ?ka » et leurs reponses n'encombrent pas le chat
         verrouille = false,
         echelle = 1.0,
         rangsOfficier = { "Officier", "GM", "Chef de guilde", "Guild Master" },
@@ -351,9 +353,83 @@ function KG.PumpWhispers(now, send, inCombat)
     if now - KG.lastWhisperAt < KG.WHISPER_GAP then return nil end
     local m = table.remove(KG.whisperQueue, 1)
     KG.lastWhisperAt = now
+    KG.NoteWhisperSent(m.text, m.to, now)
     send = send or function(t, to) pcall(SendChatMessage, t, "WHISPER", nil, to) end
     send(m.text, m.to)
     return m
+end
+
+--=============================================================================
+-- Masquer mes chuchotements dans le chat (demande de Kroma, 12/09) : ce que
+-- l'addon envoie (« ?ka », « ?ka Nom », « ?ka 20 logs ») et les reponses
+-- qu'il attend. Un filtre de ChatFrame ne cache que l'AFFICHAGE : l'evenement
+-- arrive toujours a l'addon, /kg debug journalise tout comme avant.
+-- Un chuchotement que le JOUEUR tape lui-meme n'est jamais cache : on ne
+-- cache une reponse que si on a nous-memes ecrit a ce nom depuis peu, et
+-- seulement si elle a la forme d'une reponse « ?ka » (jamais un « Tu recois
+-- N KA » de credit, jamais « BID OU PASSE », jamais du texte libre).
+--=============================================================================
+
+KG.HIDE_WINDOW = 60
+KG.sentTexts = KG.sentTexts or {}        -- { text=, t= } : mes envois recents, a cacher a l'echo
+KG.expectReplyFrom = KG.expectReplyFrom or {}   -- [nom] = heure de mon dernier envoi a ce nom
+KG.HIDDEN_REPLY_KINDS = {
+    ka_lookup = true, ka_unknown = true, ka_self = true, ka_unlinked = true, ka_notsynced = true,
+    roster_not_ready = true, ka_nologs = true, unlinked_info = true, linked = true, bad_main = true, ka_log = true,
+}
+
+function KG.NoteWhisperSent(text, to, now)
+    table.insert(KG.sentTexts, { text = text, t = now })
+    if to then KG.expectReplyFrom[KG.NormalizeName(to) or to] = now end
+    while #KG.sentTexts > 40 do table.remove(KG.sentTexts, 1) end
+end
+
+function KG.MasksWhispers()
+    local db = KromaddonGuildeuxDB or KG.GetDB()
+    return db.masquerWisps ~= false
+end
+
+-- L'echo de mon propre envoi (CHAT_MSG_WHISPER_INFORM) : cache si c'est un
+-- texte que l'addon a envoye il y a moins de HIDE_WINDOW s (consomme).
+function KG.ShouldHideOutgoing(text, now)
+    if not KG.MasksWhispers() then return false end
+    for i, m in ipairs(KG.sentTexts) do
+        if m.text == text and now - m.t <= KG.HIDE_WINDOW then
+            table.remove(KG.sentTexts, i)
+            return true
+        end
+    end
+    return false
+end
+
+-- Une reponse (CHAT_MSG_WHISPER) : cache si elle vient d'un nom a qui l'addon
+-- a ecrit depuis peu ET qu'elle a la forme d'une reponse ?ka.
+function KG.ShouldHideIncoming(text, sender, now)
+    if not KG.MasksWhispers() then return false end
+    sender = KG.NormalizeName(sender)
+    local at = sender and KG.expectReplyFrom[sender]
+    if not at or now - at > KG.HIDE_WINDOW then return false end
+    local G = KG.Grammaire
+    local ev = G and G.ParseWhisper and G.ParseWhisper(text)
+    return ev ~= nil and KG.HIDDEN_REPLY_KINDS[ev.kind] == true
+end
+
+-- Le filtre de ChatFrame. Deux signatures ont existe : (self, event, msg,
+-- author, ...) depuis 3.x, (msg) avant ; on lit celle qu'on recoit.
+function KG.ChatFilter(a, b, c, d)
+    local event, msg, author
+    if type(a) == "table" then event, msg, author = b, c, d else msg, author = a, b end
+    if type(msg) ~= "string" then return false end
+    local now = (GetTime and GetTime()) or 0
+    if event == "CHAT_MSG_WHISPER_INFORM" or (event == nil and author == nil) then
+        return KG.ShouldHideOutgoing(msg, now)
+    end
+    return KG.ShouldHideIncoming(msg, author, now)
+end
+
+if ChatFrame_AddMessageEventFilter then
+    ChatFrame_AddMessageEventFilter("CHAT_MSG_WHISPER_INFORM", KG.ChatFilter)
+    ChatFrame_AddMessageEventFilter("CHAT_MSG_WHISPER", KG.ChatFilter)
 end
 
 --=============================================================================
