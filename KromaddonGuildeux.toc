@@ -1,0 +1,15 @@
+## Interface: 30300
+## Title: KromaddonGuildeux
+## Notes: Le tableau des enchères de Kromaddon, vu du côté d'un membre : ce que l'officier annonce en /raid, relu et affiché. Mise Min, Rand, Passe, ?ka.
+## Author: Kroma
+## Version: 0.4.1
+## SavedVariables: KromaddonGuildeuxDB
+
+Core\Init.lua
+Core\UI.lua
+Modules\Encheres\Grammaire.lua
+Modules\Encheres\Etat.lua
+Modules\Encheres\Boutons.lua
+Modules\Encheres\Tableau.lua
+Modules\KA\KA.lua
+Modules\Options\Options.lua
