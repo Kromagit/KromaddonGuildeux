@@ -2,14 +2,14 @@
 
 KromaddonGuildeux affiche, de ton côté, le tableau des enchères que l'officier
 tient dans Kromaddon : qui a misé quoi, en MS ou en OS, qui a rand, qui a passé,
-et te donne de quoi miser — un champ **Montant** et son bouton **Miser**, les
-cases **MS / OS**, un champ **Max** pour une mise automatique, **Rand**,
+et te donne de quoi miser — un champ **Montant** et son bouton **Miser**, un bouton **Bid Min**, les
+cases **MS / OS**, un champ **Max auto** (validé) pour une mise automatique, **All In**, **Rand**,
 **Passe** — qui tapent en `/raid` exactement ce que tu aurais tapé toi-même. Il te montre aussi ton
 solde de KA, ton main, ton marqueur Naxx/Uldu et ton historique, en demandant
 à un officier par chuchotement (`?ka`), comme tu le ferais à la main.
 
 Il ne fait **rien tout seul** : aucun envoi en `/raid` sans un geste de toi
-(un clic, ou un **Max** que tu as tapé — la mise automatique est ta consigne,
+(un clic, ou un **Max** que tu as validé — la mise automatique est ta consigne,
 bornée par ton chiffre), aucun chuchotement en combat, jamais plus d'un
 chuchotement toutes les 2 s.
 
@@ -44,18 +44,31 @@ au chat.
     peux mettre plus. Un clic sur Miser envoie « <montant> ms » ou
     « <montant> os ». Sous le minimum, rien ne part et l'addon te dit
     pourquoi.
+  * **Bid Min** : un clic, le minimum requis de ton palier part tout de
+    suite (le bouton affiche le montant : « Bid 125 »). Même chose que taper
+    ce chiffre dans Montant puis Miser, en un geste.
   * **MS / OS** : deux cases, une seule cochée. MS au début de chaque
     enchère ; quand l'officier annonce « OS <objet> », OS se coche toute
     seule. Tu peux changer quand tu veux : le palier envoyé est toujours
     celui de la case cochée.
-  * **Max** : tape le maximum que tu es prêt à dépenser sur CET objet et
-    l'addon mise pour toi — le minimum requis, dans ton palier, 1,5 s après
-    chaque dépassement, jamais tant que tu es le meilleur de ton palier.
-    Dès que le minimum requis dépasse ton max (ou ton solde connu), il
+  * **Max auto** : le champ est pré-rempli de ton solde (le maximum naturel)
+    mais il n'arme RIEN tant que tu ne l'as pas validé — **Entrée** ou le
+    bouton **Valider**. Tape moins si tu veux ; plus que ton solde est ramené
+    à ton solde. Une fois validé, l'addon mise pour toi — le minimum requis,
+    dans ton palier, 1,5 s après chaque dépassement, jamais tant que tu es le
+    meilleur de ton palier. Dès que le minimum requis dépasse ton max, il
     s'arrête, le dit dans le chat et fait clignoter l'onglet : **à toi de
     prendre le relais**. Le max ne survit pas à l'enchère : à la clôture, le
-    champ se vide — pas d'achat automatique sur l'objet suivant. Vide le
-    champ pour arrêter.
+    champ remontre ton solde, désarmé — pas d'achat automatique sur l'objet
+    suivant. Vide le champ et valide pour arrêter.
+  * **All In** : tout ton solde dans ton palier, en un clic. Si ton solde est
+    entre la meilleure mise et le minimum requis, c'est le « all in » de
+    Kromaddon qui part (la seule mise acceptée à ce niveau) ; s'il ne dépasse
+    pas la meilleure mise, rien ne part et l'addon te le dit.
+  * **Passe automatique** : si tu as misé, qu'on t'a dépassé et que le
+    minimum requis dépasse ton solde, tu ne peux plus suivre — l'addon envoie
+    « passe » pour toi, le dit et fait clignoter l'onglet. Une fois par
+    enchère, et jamais si tu n'as pas misé.
   * **Rand** : un `/roll 1-100`. Grisé dès que ton rand est compté ; réactivé
     si un départage te nomme.
   * **Passe** : envoie « passe ». Si tu es vainqueur pour le moment, l'officier

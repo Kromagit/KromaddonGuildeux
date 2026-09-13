@@ -1,9 +1,12 @@
 --=============================================================================
 -- KromaddonGuildeux - Modules/Encheres/Boutons.lua
 --
--- Le champ « Montant » et son bouton « Miser », le choix MS / OS, le champ
--- « Max » et la mise AUTOMATIQUE jusqu'a ce max, « Rand », « Passe »
--- (§ 5.2-5.5, refaits le 12/09 sur les demandes de Kroma).
+-- Le champ « Montant » et son bouton « Miser », « Bid Min » (le min requis en
+-- un clic), le choix MS / OS, le champ « Max auto » (pre-rempli du solde,
+-- borne par lui, arme par « Valider » ou Entree seulement) et la mise
+-- AUTOMATIQUE jusqu'a ce max, « All In », « Rand », « Passe », et le PASSE
+-- AUTOMATIQUE quand le min requis depasse mon solde (§ 5.2-5.5, refaits le
+-- 12/09 sur les demandes de Kroma).
 --
 -- La LOGIQUE est pure (KG.Boutons.New) et testee dans tests/mise_min.lua et
 -- tests/passe.lua : elle decide quoi envoyer et ce que les widgets affichent ;
@@ -11,9 +14,13 @@
 -- sont construites plus bas, seulement en jeu (if KG.Frame).
 --
 -- Regle (§ 5.5) : aucun envoi en /raid sans geste du joueur — le clic sur
--- « Miser », ou un MAX qu'il a tape lui-meme : la mise automatique est SA
--- consigne, bornee par son chiffre, et elle s'arrete en le disant des que le
--- min requis depasse ce chiffre (« prends le relais »).
+-- « Miser », « Bid Min », « All In », ou un MAX qu'il a VALIDE (Entree ou
+-- « Valider » ; le champ pre-rempli du solde n'arme rien) : la mise
+-- automatique est SA consigne, bornee par son chiffre — lui-meme borne par
+-- son solde —, et elle s'arrete en le disant des que le min requis depasse ce
+-- chiffre (« prends le relais »). Le passe automatique est l'exception
+-- assumee : quand le min requis depasse le solde d'un joueur DEJA engage, il
+-- ne peut plus suivre, il passe (decision de Kroma du 12/09).
 --=============================================================================
 
 local KG = KromaddonGuildeux
@@ -60,6 +67,7 @@ function B.New(opts)
         autoRefusals = 0,       -- refus de l'officier sur ces mises
         autoStopped = nil,      -- la raison de l'arret (« prends le relais »), ou nil
         autoSent = false,       -- la mise en vol est une mise auto
+        autoPassedSerial = nil, -- l'enchere ou le passe automatique est parti (une fois)
     }
     return setmetatable(L, { __index = B })
 end
@@ -140,6 +148,62 @@ function B:BidClick(amount)
     return self:SendBid(amount, false)
 end
 
+-- Le clic sur « Bid Min » : le min requis de mon palier, calcule A L'INSTANT
+-- du clic (pas le chiffre affiche dans le champ, qui peut avoir une image de
+-- retard), avec les memes refus que « Miser ». Un seul clic : le champ montre
+-- deja le min, le second clic de l'ancien « Mise Min » ne protegeait de rien.
+function B:BidMinClick()
+    local ok, why = self:CanBid()
+    if not ok then return "refused", why end
+    local min = self:SuggestedBid()
+    if not min then return "refused", "aucune enchère" end
+    return self:BidClick(min)
+end
+
+-- Mon solde tel que ?ka l'a dit ; nil tant qu'on ne le connait pas.
+function B:Solde()
+    local ka = self.kaSelf()
+    return ka and ka.solde or nil
+end
+
+-- « All In » : tout mon solde dans mon palier. Si le solde atteint le min
+-- requis, c'est une mise ordinaire « <solde> <palier> » ; s'il est entre la
+-- meilleure mise et le min requis, seul « all in » passe chez l'officier (la
+-- regle de progression n'est pas appliquee) — le palier est alors pose par
+-- un « ms »/« os » juste avant quand il differe de celui que l'officier me
+-- donnerait ; sous la meilleure mise, l'officier refuserait (« il en faut
+-- plus ») : refuse ici, rien ne part.
+function B:AllInClick()
+    local ok, why = self:CanBid()
+    if not ok then return "refused", why end
+    local solde = self:Solde()
+    if not solde or solde < 1 then
+        self.feedback = { text = "solde inconnu : demande ?ka d'abord", color = "red" }
+        return "refused", "solde inconnu"
+    end
+    if self:IsTopOfMyTier() then
+        self.feedback = { text = "tu es déjà vainqueur de ton palier", color = "yellow" }
+        return "refused", "déjà vainqueur"
+    end
+    local e = self:Current()
+    local tier = self:MyTier()
+    local top = E.TopBid(e, tier)
+    if solde <= top then
+        self.feedback = { text = string.format("all in impossible : ton solde (%d) ne dépasse pas la meilleure mise (%d)", solde, top), color = "red" }
+        return "refused", "il en faut plus"
+    end
+    if solde >= self:SuggestedBid() then
+        return self:SendBid(solde, false)
+    end
+    local l = self:MyLine()
+    local given = (l and E.BidActive(l) and l.tier) or (e.tierWanted and e.tierWanted[self.me]) or e.palierDefaut
+    if given ~= tier then self.send(tier) end
+    self.send("all in")
+    self.state, self.sentAt, self.autoSent = "sent", self.now(), false
+    self.feedback = { text = string.format("all in envoyé : %d %s", solde, tier), color = "muted" }
+    return "send", "all in"
+end
+
 function B:SendBid(amount, auto)
     local text = self:BidText(amount)
     self.send(text)
@@ -157,16 +221,34 @@ end
 -- La mise automatique jusqu'au max (§ 5.2 bis, 12/09)
 --=============================================================================
 
--- Le max tape par le joueur. nil ou un nombre <= 0 : plus de mise auto.
+-- Le max VALIDE par le joueur (Entree ou « Valider » — jamais la perte du
+-- focus : le champ pre-rempli n'arme rien tant qu'il ne l'a pas dit). nil ou
+-- un nombre <= 0 : plus de mise auto. Plus que mon solde : ramene au solde,
+-- en le disant — on ne peut pas promettre plus qu'on a.
 function B:SetAutoMax(value)
     value = tonumber(value)
     if not value or value <= 0 then value = nil else value = math.floor(value) end
+    local clamped = nil
+    local solde = self:Solde()
+    if value and solde and value > solde then value, clamped = solde, true end
     self.autoMax = value
     self.autoStopped, self.autoNextAt = nil, nil
     if value then
-        self.feedback = { text = "mise auto jusqu'à " .. value, color = "muted" }
+        if clamped then
+            self.feedback = { text = string.format("max ramené à ton solde : %d", value), color = "yellow" }
+        else
+            self.feedback = { text = "mise auto jusqu'à " .. value, color = "muted" }
+        end
     end
     return value
+end
+
+-- Ce que le champ Max montre quand rien n'est arme : mon solde (le max
+-- naturel), ou rien si on ne le connait pas.
+function B:DefaultMaxText()
+    if self.autoMax then return tostring(self.autoMax) end
+    local solde = self:Solde()
+    return solde and tostring(solde) or ""
 end
 
 -- Pourquoi la mise auto ne part pas maintenant (nil = elle peut). Les arrets
@@ -189,6 +271,34 @@ function B:StopAuto(text)
     self.autoNextAt = nil
     self.feedback = { text = text, color = "yellow" }
     self.alert(text)
+end
+
+-- Le passe automatique (12/09, Kroma : « quand une enchere depasse le total
+-- de KA d'un joueur, il passe ») : j'ai une mise active dans mon palier, on
+-- m'a depasse, et le min requis est au-dessus de mon solde — je ne peux plus
+-- suivre, l'officier refuserait (« T'as N. C'est pas assez »), autant passer
+-- tout de suite plutot que d'attendre son « BID OU PASSE ». Une fois par
+-- enchere. Sans mise de ma part : rien a retirer, rien ne part.
+function B:AutoPassTick()
+    local e = self:Current()
+    if not e or e.statut ~= "ouverte" then return nil end
+    if self.autoPassedSerial == e.serial then return nil end
+    if self.passState ~= "idle" or self.state == "sent" then return nil end
+    if not self.inGroup() then return nil end
+    local l = self:MyLine()
+    if not (l and E.BidActive(l) and (l.tier or e.palierDefaut) == self:MyTier()) then return nil end
+    if self:IsTopOfMyTier() then return nil end
+    local solde = self:Solde()
+    local min = self:SuggestedBid()
+    if not solde or not min or min <= solde then return nil end
+    self.autoPassedSerial = e.serial
+    self.autoNextAt = nil
+    local action = self:PasseClick()
+    if action == "send" then
+        self.feedback = { text = string.format("min requis %d > ton solde %d : passe automatique", min, solde), color = "yellow" }
+        self.alert(string.format("min requis %d > ton solde %d : passe automatique", min, solde))
+    end
+    return action
 end
 
 -- Appelee a chaque tic : decide, temporise, envoie. Rend ce qui s'est passe
@@ -287,6 +397,7 @@ function B:OnEffect(kind, data)
         -- max tape avant l'ouverture serve a l'enchere qui s'ouvre.
         self.tierChoice = "ms"
         self.autoNextAt, self.autoCount, self.autoRefusals, self.autoStopped = nil, 0, 0, nil
+        self.autoPassedSerial = nil
         if kind == "cleared" then self.autoMax = nil end
         return
     end
@@ -354,6 +465,7 @@ function B:Tick(now)
         self.state, self.sentAt, self.autoSent = "idle", nil, false
         self.feedback = { text = "pas de réponse de l'officier", color = "yellow" }
     end
+    self:AutoPassTick()
     self:AutoTick(now)
     if self.passState == "sent" and self.passSentAt and now - self.passSentAt >= B.REPLY_TTL then
         self.passState, self.passSentAt = "idle", nil
@@ -396,7 +508,8 @@ if KG.Frame then
     end
 
     function B.Build(panel, logic, host)
-        -- Rangee du haut : Max auto.
+        local W = { editedSerial = nil, settingText = false }
+        -- Rangee du haut : Max auto, Valider, All In.
         local row2 = CreateFrame("Frame", nil, panel)
         row2:SetHeight(24)
         row2:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 4, 54)
@@ -405,18 +518,30 @@ if KG.Frame then
         maxLabel:SetPoint("LEFT", row2, "LEFT", 2, 0)
         local maxBox = NumBox(row2, 64)
         maxBox:SetPoint("LEFT", maxLabel, "RIGHT", 8, 0)
+        -- « Valider » arme la mise auto sur ce que le champ contient ; Entree
+        -- fait pareil. Perdre le focus n'arme RIEN : le champ est pre-rempli du
+        -- solde, un clic ailleurs ne doit pas lancer des mises.
+        local valider = KG.NewButton(row2, "Valider", 64, 22)
+        valider:SetPoint("LEFT", maxBox, "RIGHT", 4, 0)
+        local allIn = KG.NewButton(row2, "All In", 64, 22)
+        allIn:SetPoint("LEFT", valider, "RIGHT", 8, 0)
         local maxHint = KG.Label(row2, "")
-        maxHint:SetPoint("LEFT", maxBox, "RIGHT", 8, 0)
+        maxHint:SetPoint("LEFT", allIn, "RIGHT", 8, 0)
         maxHint:SetPoint("RIGHT", row2, "RIGHT", 0, 0)
         maxHint:SetJustifyH("LEFT")
         do local c = KG.Theme.muted; maxHint:SetTextColor(c[1], c[2], c[3]) end
-        local function CommitMax(self)
-            local v = logic:SetAutoMax(self:GetText())
-            self:SetText(v and tostring(v) or "")
+        local function CommitMax()
+            local v = logic:SetAutoMax(maxBox:GetText())
+            maxBox:SetText(v and tostring(v) or logic:DefaultMaxText())
+            maxBox:ClearFocus()
             host.Refresh()
         end
-        maxBox:SetScript("OnEnterPressed", function(self) CommitMax(self); self:ClearFocus() end)
-        maxBox:SetScript("OnEditFocusLost", CommitMax)
+        maxBox:SetScript("OnEnterPressed", CommitMax)
+        maxBox:SetScript("OnEscapePressed", function(self) self:SetText(logic:DefaultMaxText()); self:ClearFocus() end)
+        maxBox:SetScript("OnEditFocusLost", function(self) self:SetText(logic:DefaultMaxText()) end)
+        valider:SetScript("OnClick", CommitMax)
+        -- Le gestionnaire d'All In est pose plus bas, une fois `montant` cree :
+        -- ecrit ici, il lirait une globale nulle (globaux_suspects l'a vu).
 
         -- Rangee du bas : Montant, Miser, MS / OS, Rand, Passe.
         local row = CreateFrame("Frame", nil, panel)
@@ -431,14 +556,16 @@ if KG.Frame then
         -- Le champ suit le min requis tant que le joueur n'y a pas tape (le
         -- drapeau, pas le 2e argument d'OnTextChanged : rien ne garantit
         -- qu'il arrive sur ce client). Une saisie vaut pour l'enchere en cours.
-        local W = { editedSerial = nil, settingText = false }
         montant:SetScript("OnTextChanged", function()
             if W.settingText then return end
             local e = logic:Current()
             W.editedSerial = e and e.serial or -1
         end)
 
-        local miser = KG.NewButton(row, "Miser", 64, 22)
+        -- Largeurs comptees pour tenir dans les 536 px de la rangee (560 - 2*8
+        -- de marge - 2*4) : ~50 + 8 + 64 + 4 + 56 + 4 + 64 + 8 + 40 + 6 + 40 + 8
+        -- + 56 + 6 + 110 = 524. 3.3.5a ne rogne pas : ce qui deborde se voit.
+        local miser = KG.NewButton(row, "Miser", 56, 22)
         miser:SetPoint("LEFT", montant, "RIGHT", 4, 0)
         miser:SetScript("OnClick", function()
             local action = logic:BidClick(montant:GetText())
@@ -446,19 +573,35 @@ if KG.Frame then
             host.Refresh()
         end)
 
+        -- « Bid Min » (remis le 12/09 a la demande de Kroma) : un clic, le min
+        -- requis part — sans passer par le champ.
+        local bidMin = KG.NewButton(row, "Bid Min", 64, 22)
+        bidMin:SetPoint("LEFT", miser, "RIGHT", 4, 0)
+        bidMin:SetScript("OnClick", function()
+            local action = logic:BidMinClick()
+            if action == "send" then W.editedSerial = nil; montant:ClearFocus() end
+            host.Refresh()
+        end)
+
+        allIn:SetScript("OnClick", function()
+            local action = logic:AllInClick()
+            if action == "send" then W.editedSerial = nil; montant:ClearFocus() end
+            host.Refresh()
+        end)
+
         local cbMS = Check(row, "MS")
-        cbMS:SetPoint("LEFT", miser, "RIGHT", 10, 0)
+        cbMS:SetPoint("LEFT", bidMin, "RIGHT", 8, 0)
         local cbOS = Check(row, "OS")
-        cbOS:SetPoint("LEFT", cbMS.label, "RIGHT", 8, 0)
+        cbOS:SetPoint("LEFT", cbMS.label, "RIGHT", 6, 0)
         cbMS:SetScript("OnClick", function() logic:SetTierChoice("ms"); host.Refresh() end)
         cbOS:SetScript("OnClick", function() logic:SetTierChoice("os"); host.Refresh() end)
 
-        local rand = KG.NewButton(row, "Rand", 64, 22)
-        rand:SetPoint("LEFT", cbOS.label, "RIGHT", 12, 0)
+        local rand = KG.NewButton(row, "Rand", 56, 22)
+        rand:SetPoint("LEFT", cbOS.label, "RIGHT", 8, 0)
         rand:SetScript("OnClick", function() logic:RandClick(); host.Refresh() end)
 
-        local passe = KG.NewButton(row, "Passe", 120, 22)
-        passe:SetPoint("LEFT", rand, "RIGHT", 8, 0)
+        local passe = KG.NewButton(row, "Passe", 110, 22)
+        passe:SetPoint("LEFT", rand, "RIGHT", 6, 0)
         passe:SetScript("OnClick", function() logic:PasseClick(); host.Refresh() end)
 
         local fb = KG.Label(panel, "")
@@ -466,8 +609,8 @@ if KG.Frame then
         fb:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -6, 8)
         fb:SetJustifyH("LEFT")
 
-        W.montant, W.miser, W.cbMS, W.cbOS, W.rand, W.passe, W.fb = montant, miser, cbMS, cbOS, rand, passe, fb
-        W.maxBox, W.maxHint, W.row, W.row2 = maxBox, maxHint, row, row2
+        W.montant, W.miser, W.bidMin, W.cbMS, W.cbOS, W.rand, W.passe, W.fb = montant, miser, bidMin, cbMS, cbOS, rand, passe, fb
+        W.maxBox, W.maxHint, W.valider, W.allIn, W.row, W.row2 = maxBox, maxHint, valider, allIn, row, row2
         function W.Refresh(now)
             local e = logic:Current()
             local serial = e and e.serial or -1
@@ -481,13 +624,16 @@ if KG.Frame then
             -- Un EditBox n'a ni Enable ni Disable en 3.3.5a (Button seulement) :
             -- c'est le bouton Miser qui se grise, le champ reste lisible.
             local ok, why = logic:CanBid()
-            if ok then miser:Enable() else miser:Disable() end
-            miser.tooltip = why
+            if ok then miser:Enable(); bidMin:Enable() else miser:Disable(); bidMin:Disable() end
+            miser.tooltip, bidMin.tooltip = why, why
+            -- Le bouton dit ce qu'il enverrait : « Bid 125 » — sans enchere, « Bid Min ».
+            local sug = ok and logic:SuggestedBid() or nil
+            bidMin:SetText(sug and ("Bid " .. sug) or "Bid Min")
             cbMS:SetChecked(logic.tierChoice ~= "os")
             cbOS:SetChecked(logic.tierChoice == "os")
-            -- Le champ Max : ce que la logique retient (il tombe a la cloture).
+            -- Le champ Max : le max arme, sinon mon solde (pre-rempli, pas arme).
             if not maxBox:HasFocus() then
-                local txt = logic.autoMax and tostring(logic.autoMax) or ""
+                local txt = logic:DefaultMaxText()
                 if maxBox:GetText() ~= txt then maxBox:SetText(txt) end
             end
             if logic.autoMax then
@@ -496,8 +642,10 @@ if KG.Frame then
                 elseif blocked then maxHint:SetText("mise auto en veille (" .. blocked .. ")")
                 else maxHint:SetText(KG.Hex("green") .. "mise auto active jusqu'à " .. logic.autoMax .. "|r") end
             else
-                maxHint:SetText("vide = pas de mise auto. Rempli : l'addon mise le min requis pour toi jusqu'à ce max.")
+                maxHint:SetText("pas armée : Valider (ou Entrée) et l'addon mise le min requis pour toi jusqu'à ce max.")
             end
+            local sold = logic:Solde()
+            if ok and sold and sold >= 1 then allIn:Enable() else allIn:Disable() end
             ok = logic:CanRoll()
             if ok then rand:Enable() else rand:Disable() end
             passe:SetText(logic:PasseLabel())
