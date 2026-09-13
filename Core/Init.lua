@@ -289,9 +289,12 @@ end
 
 -- Officier ou pas, ET POURQUOI (pour /kg debug). Le rang de guilde decide
 -- quand il est connu ; quand il ne l'est pas (roster pas encore lu, ou moi
--- hors guilde), les galons de raid font foi : dans cette guilde seuls des
--- officiers menent les raids, et l'addon ne fait que lire. Un rang connu
--- non officier n'est jamais rattrape par un galon d'assistant.
+-- hors guilde), les galons de raid font foi POUR LIRE : une ligne de verdict
+-- a la forme Kromaddon ne peut venir que d'un officier, l'accepter ne coute
+-- rien. Un rang connu non officier n'est jamais rattrape par un galon.
+-- Mais un galon ne suffit JAMAIS pour lui ECRIRE (KG.OnlineOfficers) : un
+-- raid sans officier est mene par un membre, et le 13/09 il recevait nos
+-- « ?ka » (constat de Kroma). Ecrire exige un rang d'officier CONNU.
 function KG.OfficerStatus(name)
     name = KG.NormalizeName(name)
     if not name then return false, "nom vide" end
@@ -312,18 +315,29 @@ function KG.IsOfficer(name)
     return ok
 end
 
--- Les officiers joignables : ceux du roster connectes, plus ceux du raid
--- (connectes) que les galons font reconnaitre quand le roster est muet.
+-- Officier de rang CONNU : la seule porte pour lui chuchoter. nil (rang
+-- inconnu) n'est pas false — /kg debug fait la difference.
+function KG.IsKnownOfficer(name)
+    name = KG.NormalizeName(name)
+    local rank = name and KG.guildRanks[name]
+    if rank == nil then return nil end
+    return KG.IsOfficerRankName(rank) and true or false
+end
+
+-- Les officiers a qui l'on peut ECRIRE (?ka) : rang d'officier CONNU et
+-- connectes — ceux du roster, plus ceux du raid dont le roster connait le rang
+-- (un roster de connectes seulement peut etre en retard sur le raid). Jamais
+-- sur un galon de raid : le chef d'un raid sans officier est un membre.
 function KG.OnlineOfficers()
     local list, seen = {}, {}
     for n in pairs(KG.guildOnline) do
-        if KG.IsOfficer(n) then seen[n] = true; table.insert(list, n) end
+        if KG.IsKnownOfficer(n) then seen[n] = true; table.insert(list, n) end
     end
     if KG.InRaid() then
         for i = 1, GetNumRaidMembers() do
             local n, _, _, _, _, _, _, online = GetRaidRosterInfo(i)
             n = KG.NormalizeName(n)
-            if n and not seen[n] and online ~= false and KG.IsOfficer(n) then seen[n] = true; table.insert(list, n) end
+            if n and not seen[n] and online ~= false and KG.IsKnownOfficer(n) then seen[n] = true; table.insert(list, n) end
         end
     end
     return list
@@ -564,11 +578,17 @@ function KG.DiagnosticLines()
                 local galon = rank == 2 and "chef de raid" or (rank == 1 and "assistant" or "membre")
                 if name == ml then galon = galon .. ", maître du butin" end
                 local ok, why = KG.OfficerStatus(name)
-                table.insert(lines, string.format("raid : %s (%s) => %s (%s)", name, galon, ok and "OFFICIER" or "non officier", why))
+                local verdict = ok and "OFFICIER" or "non officier"
+                if ok and KG.guildRanks[name] == nil then verdict = "OFFICIER pour lire, pas pour ?ka" end
+                table.insert(lines, string.format("raid : %s (%s) => %s (%s)", name, galon, verdict, why))
             end
         end
         local elu = KG.KA and KG.KA.Logic and KG.KA:Logic():Elect()
-        table.insert(lines, "officier élu pour ?ka : " .. tostring(elu or "aucun"))
+        local eluLine = "officier élu pour ?ka : " .. tostring(elu or "aucun")
+        if not elu and not KG.rosterComplete then
+            eluLine = eluLine .. " (roster incomplet : on n'écrit qu'à un officier de rang CONNU, un galon de raid ne suffit pas)"
+        end
+        table.insert(lines, eluLine)
     else
         table.insert(lines, "hors raid")
     end

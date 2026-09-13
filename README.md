@@ -75,7 +75,10 @@ au chat.
     demande confirmation : le bouton devient « Confirmer le passe », reclique.
 * **KA** — ton solde, ton main, ton marqueur et ton historique. « Actualiser »
   redemande (une fois par minute). Si tu lis « personnage non lié » : envoie
-  `?ka #NomDeTonMain` à un officier, comme Kromaddon te le dit.
+  `?ka #NomDeTonMain` à un officier, comme Kromaddon te le dit. « Aucun
+  officier joignable » : aucun officier de guilde connecté — dans un raid mené
+  par un membre, l'addon n'écrit à personne (le chef de raid n'a pas
+  Kromaddon), il attend qu'un officier se connecte.
 * **Options** — la liste des loots annoncés dans la soirée avec des cases à
   cocher ; « Ouvrir la fenêtre quand un butin est annoncé », « Ouvrir sur
   l'enchère d'un loot coché » et « Ouvrir pour toutes les enchères » (la
