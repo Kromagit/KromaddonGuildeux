@@ -151,7 +151,15 @@ end
 -- base ; un chef de raid inconnu, peut-etre pas) ; ceux qui n'ont pas
 -- repondu (silent) apres tous les autres, ceux qui ont dit « pas encore
 -- synchronisé » en dernier.
-function KA:Elect()
+-- requireOnline (14/09 soir, correctif du repli ci-dessous) : true pour un
+-- appelant qui va CHUCHOTER pour de vrai (KA:LinkMain -- le seul chemin
+-- visible). Dans ce cas pas de repli sur db.lastOfficer : un chuchotement
+-- texte a quelqu'un de deconnecte, contrairement a un message d'addon, EST
+-- visible (dans mon propre chat) et ne coute pas rien -- il part pour rien,
+-- vers quelqu'un qui ne repondra jamais. AskSelf/Pump/RequestLogs, qui
+-- n'envoient que par le canal d'addon, continuent d'appeler Elect() sans
+-- argument et gardent le repli.
+function KA:Elect(requireOnline)
     local online = {}
     for _, n in ipairs(self.onlineOfficers()) do if n ~= self.me then online[n] = true end end
     local raid = self.raidMembers()
@@ -175,6 +183,7 @@ function KA:Elect()
         return a < b
     end)
     if candidates[1] then return candidates[1] end
+    if requireOnline then return nil end
     -- Personne (hors raid, ou raid sans galon connu) : le dernier officier qui
     -- m'a repondu (14/09, Kroma : « quand j'actualise j'ai toujours "aucun
     -- officier joignable" » -- Kromalchif, hors raid, avec Kromandant en
@@ -544,7 +553,13 @@ end
 function KA:LinkMain(name)
     name = name and string.gsub(name, "^%s*#?(.-)%s*$", "%1") or ""
     if name == "" then self.linkFeedback = "tape le nom de ton main"; self.onChange(); return false, "nom vide" end
-    local elu = self:Elect()
+    -- requireOnline (14/09 soir) : jamais de repli sur le dernier officier
+    -- qui a repondu ici -- ce chuchotement est REEL et VISIBLE, contrairement
+    -- au canal d'addon ; l'envoyer a quelqu'un de deconnecte ne fait
+    -- qu'afficher un chuchotement mort chez le guildeux, sans jamais de
+    -- reponse (constat de Kroma, 14/09 soir : « KromaddonGuildeux envoie des
+    -- wisp à des offis déco »).
+    local elu = self:Elect(true)
     if not elu then self.linkFeedback = "aucun officier joignable"; self.onChange(); return false, "aucun officier joignable" end
     self.whisper(elu, "?ka " .. name)
     self.linkFeedback = "demande envoyée à " .. elu .. " : ?ka " .. name

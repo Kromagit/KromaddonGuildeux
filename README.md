@@ -95,10 +95,13 @@ au chat.
   conservé après déconnexion et signalé comme tel jusqu'à sa confirmation.
   Les officiers connus sont prioritaires ; un chef, assistant ou maître du
   butin dont le rang est inconnu peut aussi répondre par l'addon. En dernier
-  recours, l'addon essaie le dernier officier qui t'a répondu. Si personne ne
-  peut répondre, il affiche « aucun officier joignable » ou attend la réponse.
+  recours, l'addon essaie le dernier officier qui t'a répondu pour ces échanges
+  automatiques. Si personne ne peut répondre, il affiche « aucun officier
+  joignable » ou attend la réponse.
   **Personnage non lié** : un formulaire recouvre les onglets. Saisis le
   **nom de ton main**, puis clique sur **Valider** ou appuie sur Entrée.
+  La liaison nécessite un officier connecté : sinon, le formulaire affiche
+  « aucun officier joignable » sans envoyer de chuchotement.
   La demande `?ka NomDuMain` et la réponse restent visibles dans le chat.
   Les onglets redeviennent accessibles une fois la liaison confirmée.
 * **Options** — la liste des loots annoncés dans la soirée avec des cases à
