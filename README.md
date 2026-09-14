@@ -1,5 +1,13 @@
 # KromaddonGuildeux
 
+## [⬇ Télécharger KromaddonGuildeux — prêt à installer](https://github.com/Kromagit/KromaddonGuildeux/releases/latest/download/KromaddonGuildeux.zip)
+
+Ce lien télécharge directement **KromaddonGuildeux.zip**, avec le dossier **KromaddonGuildeux** déjà nommé correctement. Il restera le même pour les prochaines versions.
+
+**Ferme WoW, décompresse le ZIP et place le dossier `KromaddonGuildeux` dans `Interface\AddOns\`. Aucun renommage à faire.**
+
+Pour installer l'addon, utilise le lien ci-dessus. Le bouton vert **Code → Download ZIP** télécharge l'archive du code avec le suffixe `-main`.
+
 KromaddonGuildeux affiche, de ton côté, le tableau des enchères que l'officier
 tient dans Kromaddon : qui a misé quoi, en MS ou en OS, qui a rand, qui a passé,
 et te donne de quoi miser — un champ **Montant** et son bouton **Miser**, un bouton **Bid Min**, les
@@ -20,7 +28,7 @@ gagner, et l'indice du moment.
 ## Installer
 
 1. Ferme complètement World of Warcraft.
-2. Télécharge le fichier `KromaddonGuildeux-<version>.zip` dans la [dernière version publiée](https://github.com/Kromagit/KromaddonGuildeux/releases/latest), puis décompresse son dossier `KromaddonGuildeux` dans `Interface\AddOns\` de ton
+2. [Télécharge KromaddonGuildeux.zip](https://github.com/Kromagit/KromaddonGuildeux/releases/latest/download/KromaddonGuildeux.zip), puis décompresse son dossier `KromaddonGuildeux` dans `Interface\AddOns\` de ton
    client 3.3.5a (à côté des dossiers `Blizzard_*`).
 3. Lance le jeu, vérifie dans la liste des addons (écran de sélection du
    personnage) que **KromaddonGuildeux** est coché.
@@ -122,6 +130,6 @@ raid (bandeau « enchère rejointe en cours »).
 
 ## Mettre à jour
 
-Ferme complètement WoW, télécharge le ZIP de la dernière version et remplace les fichiers dans le dossier KromaddonGuildeux existant. Le chemin final doit être Interface\AddOns\KromaddonGuildeux\KromaddonGuildeux.toc. Relance ensuite le jeu.
+Ferme complètement WoW, [télécharge KromaddonGuildeux.zip](https://github.com/Kromagit/KromaddonGuildeux/releases/latest/download/KromaddonGuildeux.zip) et remplace les fichiers dans le dossier `KromaddonGuildeux` existant. Le chemin final doit être `Interface\AddOns\KromaddonGuildeux\KromaddonGuildeux.toc`. Relance ensuite le jeu.
 
-Dans Releases, télécharge le fichier `KromaddonGuildeux-<version>.zip`. Il contient directement le dossier `KromaddonGuildeux`, sans suffixe `-main` et sans renommage à faire.
+Le téléchargement contient directement le dossier `KromaddonGuildeux`, sans renommage à faire. Les [anciennes versions](https://github.com/Kromagit/KromaddonGuildeux/releases) restent disponibles.
