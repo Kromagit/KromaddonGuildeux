@@ -236,11 +236,23 @@ function E:Archive(e)
     while #self.history > E.HISTORY_MAX do table.remove(self.history) end
 end
 
+-- Une enchere encore ouverte (ni close ni annulee) qu'un nouveau debut
+-- interrompt (§ 4.2, deux encheres de suite sans cloture propre : un autre
+-- officier ouvre, ou le meme enchaine) doit quand meme emettre « close » --
+-- sinon un Max auto VALIDE sur elle (Boutons.lua) survit tel quel a la
+-- nouvelle enchere qui s'ouvre : ce ne serait plus « sa » consigne, ce serait
+-- un achat non voulu sur un autre objet (constat de Kroma, 13/09 : « quand un
+-- loot debute, les mises auto enregistrees doivent etre effacees »).
+function E:InterruptCurrent(t)
+    local e = self.current
+    if not e or e.statut == "close" or e.statut == "annulee" then return end
+    e.statut = "interrompue"
+    e.closedAt = t
+    self.onEffect("close", e)
+end
+
 function E:Open(lien, sang, annonceur, t)
-    if self.current and self.current.statut ~= "close" and self.current.statut ~= "annulee" then
-        self.current.statut = "interrompue"
-        self.current.closedAt = t
-    end
+    self:InterruptCurrent(t)
     self:Archive(self.current)
     self.current = self:NewAuction(lien, sang, annonceur, t, false)
     self.lastAnnouncer = annonceur
@@ -251,6 +263,7 @@ end
 -- « Rejoint en cours » (§ 5.6) : la premiere ligne de l'annonceur n'est pas
 -- une ouverture. Etat cree avec lien inconnu, bandeau, boutons actifs.
 function E:JoinInProgress(annonceur, t)
+    self:InterruptCurrent(t)
     self:Archive(self.current)
     self.current = self:NewAuction(nil, false, annonceur, t, true)
     self.lastAnnouncer = annonceur

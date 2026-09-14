@@ -44,6 +44,7 @@ function EN:EnsureState()
         now = KG.Now,
         inGroup = KG.InGroup,
         kaSelf = function() return KG.KA and KG.KA.Logic and KG.KA:Logic():SelfInfo() or nil end,
+        kaLearn = function(solde) if KG.KA and KG.KA.Logic then KG.KA:Logic():LearnSelfBalance(solde) end end,
         send = function(text)
             local channel = KG.InRaid() and "RAID" or "PARTY"
             pcall(SendChatMessage, text, channel)

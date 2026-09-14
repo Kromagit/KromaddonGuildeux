@@ -327,6 +327,69 @@ function KG.ToggleWindow()
     if main:IsShown() then main:Hide() else KG.ShowWindow() end
 end
 
+-- La porte des non lies (14/09, Kroma : « pour un joueur non lie je veux
+-- KromaddonGuildeux completement inoperant avec juste un champ texte pour
+-- qu'ils saisissent le nom de leur main et un bouton valider »). Un cadre
+-- opaque par-dessus les onglets et leurs panneaux (3.3.5a ne rogne pas :
+-- c'est l'opacite et le niveau de cadre qui cachent), qui avale la souris.
+-- Le module KA l'allume et l'eteint (KG.SetGate) sur son etat « non lie ».
+local gate = CreateFrame("Frame", nil, main)
+gate:SetPoint("TOPLEFT", main, "TOPLEFT", 8, TAB_TOP + 2)
+gate:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -8, 8)
+gate:SetFrameLevel(main:GetFrameLevel() + 20)
+gate:EnableMouse(true)
+gate:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, tile = false, edgeSize = 1,
+    insets = { left = 1, right = 1, top = 1, bottom = 1 } })
+do
+    local c = KG.Theme.window
+    gate:SetBackdropColor(c[1], c[2], c[3], 1)
+    c = KG.Theme.goldDim
+    gate:SetBackdropBorderColor(c[1], c[2], c[3], 0.82)
+end
+gate:Hide()
+KG.gate = gate
+
+local gTitle = KG.Label(gate, "Personnage non lié à un main", "GameFontNormalLarge")
+gTitle:SetPoint("TOPLEFT", gate, "TOPLEFT", 14, -16)
+do local c = KG.Theme.gold; gTitle:SetTextColor(c[1], c[2], c[3]) end
+local gText = KG.Label(gate, "Kromaddon ne connaît pas ce personnage. Tape le nom de ton main (ton personnage principal, celui qui porte tes KA) et valide : un « ?ka <Main> » part à l'officier, sa réponse s'affiche dans le chat. Tant que tu n'es pas lié, le reste de KromaddonGuildeux ne fait rien.")
+gText:SetPoint("TOPLEFT", gate, "TOPLEFT", 14, -44)
+gText:SetPoint("RIGHT", gate, "RIGHT", -14, 0)
+gText:SetJustifyH("LEFT"); gText:SetWordWrap(true)
+local gLabel = KG.Label(gate, "Nom du main :")
+gLabel:SetPoint("TOPLEFT", gate, "TOPLEFT", 14, -104)
+local gBox = CreateFrame("EditBox", nil, gate, "InputBoxTemplate")
+gBox:SetPoint("LEFT", gLabel, "RIGHT", 10, 0)
+gBox:SetWidth(180); gBox:SetHeight(22)
+gBox:SetAutoFocus(false); gBox:SetMaxLetters(24)
+KG.StyleEditBox(gBox)
+local gBtn = KG.NewButton(gate, "Valider", 90, 22)
+gBtn:SetPoint("LEFT", gBox, "RIGHT", 10, 0)
+local gFeedback = KG.Label(gate, "")
+gFeedback:SetPoint("TOPLEFT", gate, "TOPLEFT", 14, -136)
+gFeedback:SetPoint("RIGHT", gate, "RIGHT", -14, 0)
+gFeedback:SetJustifyH("LEFT"); gFeedback:SetWordWrap(true)
+do local c = KG.Theme.yellow; gFeedback:SetTextColor(c[1], c[2], c[3]) end
+local function GateSubmit()
+    if KG.KA and KG.KA.Logic then
+        KG.KA:Logic():LinkMain(gBox:GetText())
+        gBox:ClearFocus()
+    end
+end
+gBtn:SetScript("OnClick", GateSubmit)
+gBox:SetScript("OnEnterPressed", function(self) GateSubmit() end)
+
+-- on = true : la porte couvre tout ; logic (optionnel) fournit le retour de
+-- l'officier a afficher (linkFeedback).
+function KG.SetGate(on, logic)
+    if on then
+        gFeedback:SetText((logic and logic.linkFeedback) or "")
+        if not gate:IsShown() then gate:Show() end
+    elseif gate:IsShown() then
+        gate:Hide()
+    end
+end
+
 main:SetScript("OnShow", function()
     KG.ApplyScale()
     KG.RestorePosition()

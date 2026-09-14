@@ -20,6 +20,11 @@ local KG = KromaddonGuildeux
 KG.ADDON_NAME = "KromaddonGuildeux"
 KG.Version = (GetAddOnMetadata and GetAddOnMetadata(KG.ADDON_NAME, "Version")) or "dev"
 
+-- Les rangs de guilde qui font de quelqu'un un officier (§ 6.2). En dur
+-- depuis le 14/09 (Kroma : « la liste des rangs peut être mise en dur dans
+-- le code, il me semble ») — plus configurable depuis Options.
+KG.OFFICER_RANK_NAMES = { "Officier", "GM", "Chef de guilde", "Guild Master" }
+
 --=============================================================================
 -- Base (par compte)
 --=============================================================================
@@ -32,10 +37,8 @@ function KG.Defaults()
         ouvrirAuxLoots = true,
         ouvrirPourCoches = true,
         ouvrirToutesEncheres = false,
-        masquerWisps = true,   -- mes « ?ka » et leurs reponses n'encombrent pas le chat
         verrouille = false,
         echelle = 1.0,
-        rangsOfficier = { "Officier", "GM", "Chef de guilde", "Guild Master" },
         -- Etat persistant
         loots = {},          -- [nightKey] = { [itemID] = { link=, checked=, t= } }
         historique = {},     -- [main] = { { t=, auteur=, delta=, total=, raison= }, ... }
@@ -213,7 +216,21 @@ KG.rosterComplete = false                -- au moins un membre HORS LIGNE enumer
 -- pour les montrer (SetGuildRosterShowOffline) : sans ca le main d'un reroll
 -- deconnecte passerait pour un PU. Classe de bug 5 de Kromaddon : une
 -- conclusion « pas en guilde » ne se prend que sur un roster COMPLET.
+--
+-- 13/09 (Kroma : « dans l'onglet guilde du jeu de base les deco restent
+-- affiches meme case decochee ») : SetGuildRosterShowOffline(true) est un
+-- REGLAGE CLIENT GLOBAL, pas un parametre de CETTE demande -- le forcer sans
+-- jamais le desarmer laisse l'onglet Guilde standard de Blizzard afficher
+-- les hors-ligne en permanence, quoi que Kroma ait decoche. On ne le force
+-- que le temps de lire NOTRE roster (KG.RequestGuildRoster), puis on le
+-- restaure des que GUILD_ROSTER_UPDATE nous a livre la reponse.
 function KG.RefreshGuildRoster()
+    -- Toute reponse (meme vide) desarme le forcage : on ne veut jamais
+    -- laisser le reglage client force au-dela d'un aller-retour GUILD_ROSTER_UPDATE.
+    if KG.rosterShowOfflineArmed and SetGuildRosterShowOffline then
+        pcall(SetGuildRosterShowOffline, false)
+        KG.rosterShowOfflineArmed = false
+    end
     if not (GetNumGuildMembers and GetGuildRosterInfo) then return end
     local n = GetNumGuildMembers()
     if not n or n == 0 then return end
@@ -240,6 +257,7 @@ end
 -- tant que le roster n'est pas complet. `force` saute la cadence (evenements).
 KG.ROSTER_RETRY = 30
 KG.rosterRequestedAt = -1e9
+KG.rosterShowOfflineArmed = false  -- vrai tant que RefreshGuildRoster n'a pas restaure le reglage client
 
 function KG.RequestGuildRoster(force, now)
     if not GuildRoster then return false end
@@ -247,18 +265,20 @@ function KG.RequestGuildRoster(force, now)
     now = now or (GetTime and GetTime()) or 0
     if not force and now - KG.rosterRequestedAt < KG.ROSTER_RETRY then return false end
     KG.rosterRequestedAt = now
-    if SetGuildRosterShowOffline then pcall(SetGuildRosterShowOffline, true) end
+    if SetGuildRosterShowOffline then
+        pcall(SetGuildRosterShowOffline, true)
+        KG.rosterShowOfflineArmed = true
+    end
     pcall(GuildRoster)
     return true
 end
 
--- Les noms des rangs officier viennent des Options (jamais un numero de
--- rang en dur). Comparaison insensible a la casse.
+-- Les noms des rangs officier (KG.OFFICER_RANK_NAMES, en dur - jamais un
+-- numero de rang). Comparaison insensible a la casse.
 function KG.IsOfficerRankName(rank)
     if type(rank) ~= "string" then return false end
     local lower = string.lower(rank)
-    local db = KromaddonGuildeuxDB or KG.GetDB()
-    for _, r in ipairs(db.rangsOfficier or KG.Defaults().rangsOfficier) do
+    for _, r in ipairs(KG.OFFICER_RANK_NAMES) do
         if string.lower(r) == lower then return true end
     end
     return false
@@ -292,9 +312,9 @@ end
 -- hors guilde), les galons de raid font foi POUR LIRE : une ligne de verdict
 -- a la forme Kromaddon ne peut venir que d'un officier, l'accepter ne coute
 -- rien. Un rang connu non officier n'est jamais rattrape par un galon.
--- Mais un galon ne suffit JAMAIS pour lui ECRIRE (KG.OnlineOfficers) : un
--- raid sans officier est mene par un membre, et le 13/09 il recevait nos
--- « ?ka » (constat de Kroma). Ecrire exige un rang d'officier CONNU.
+-- Pour lui ECRIRE, voir KG.OnlineOfficers : depuis 0.5.8, un galon de rang
+-- de guilde inconnu suffit aussi, parce que la demande est un message
+-- d'addon que personne ne voit.
 function KG.OfficerStatus(name)
     name = KG.NormalizeName(name)
     if not name then return false, "nom vide" end
@@ -324,10 +344,19 @@ function KG.IsKnownOfficer(name)
     return KG.IsOfficerRankName(rank) and true or false
 end
 
--- Les officiers a qui l'on peut ECRIRE (?ka) : rang d'officier CONNU et
--- connectes — ceux du roster, plus ceux du raid dont le roster connait le rang
--- (un roster de connectes seulement peut etre en retard sur le raid). Jamais
--- sur un galon de raid : le chef d'un raid sans officier est un membre.
+-- Les officiers a qui l'on peut ECRIRE (KA par le canal d'addon) : rang
+-- d'officier CONNU et connectes -- ceux du roster, plus ceux du raid dont le
+-- roster connait le rang (un roster de connectes seulement peut etre en
+-- retard sur le raid) -- et, depuis 0.5.8, les galonnes du raid dont le rang
+-- de guilde est INCONNU (chef, assistants, maitre du butin : une autre
+-- guilde, ou un roster muet). Jamais un rang CONNU non officier.
+-- Le 13/09 (0.5.3) un galon ne suffisait pas : le chef d'un raid sans officier
+-- est un membre, et nos « ?ka » CHUCHOTES s'affichaient chez lui. Depuis
+-- 0.5.6 la demande est un message d'addon : quelqu'un sans Kromaddon ne
+-- voit rien, ne recoit rien, et Kromalchif chez Kromagasin avait Kromandant
+-- (chef de raid, maitre du butin, autre guilde) sous les yeux sans pouvoir
+-- lui ecrire (constat de Kroma, 14/09). KA:Elect prefere toujours un
+-- officier de rang connu ; un galon de rang inconnu passe apres.
 function KG.OnlineOfficers()
     local list, seen = {}, {}
     for n in pairs(KG.guildOnline) do
@@ -337,7 +366,10 @@ function KG.OnlineOfficers()
         for i = 1, GetNumRaidMembers() do
             local n, _, _, _, _, _, _, online = GetRaidRosterInfo(i)
             n = KG.NormalizeName(n)
-            if n and not seen[n] and online ~= false and KG.IsKnownOfficer(n) then seen[n] = true; table.insert(list, n) end
+            if n and not seen[n] and online ~= false then
+                local known = KG.IsKnownOfficer(n)
+                if known == true or (known == nil and KG.IsOfficer(n)) then seen[n] = true; table.insert(list, n) end
+            end
         end
     end
     return list
@@ -367,84 +399,53 @@ function KG.PumpWhispers(now, send, inCombat)
     if now - KG.lastWhisperAt < KG.WHISPER_GAP then return nil end
     local m = table.remove(KG.whisperQueue, 1)
     KG.lastWhisperAt = now
-    KG.NoteWhisperSent(m.text, m.to, now)
     send = send or function(t, to) pcall(SendChatMessage, t, "WHISPER", nil, to) end
     send(m.text, m.to)
     return m
 end
 
 --=============================================================================
--- Masquer mes chuchotements dans le chat (demande de Kroma, 12/09) : ce que
--- l'addon envoie (« ?ka », « ?ka Nom », « ?ka 20 logs ») et les reponses
--- qu'il attend. Un filtre de ChatFrame ne cache que l'AFFICHAGE : l'evenement
--- arrive toujours a l'addon, /kg debug journalise tout comme avant.
--- Un chuchotement que le JOUEUR tape lui-meme n'est jamais cache : on ne
--- cache une reponse que si on a nous-memes ecrit a ce nom depuis peu, et
--- seulement si elle a la forme d'une reponse « ?ka » (jamais un « Tu recois
--- N KA » de credit, jamais « BID OU PASSE », jamais du texte libre).
+-- File de messages d'addon (canal SendAddonMessage) : le protocole ?ka
+-- transporte hors du chat (13/09, demande de Kroma « point 2 » ; brief
+-- brief-kg-canal-addon-13-09.md pour le cote Kromaddon). Un message d'addon
+-- n'entre JAMAIS dans le ChatFrame -- rien a masquer ici, contrairement a la
+-- file de chuchotements ci-dessus. La meme discipline (jamais en combat,
+-- KG.WHISPER_GAP entre deux envois) s'applique : seul le TRANSPORT change,
+-- pas la cadence. AUCUN REPLI vers le chuchotement texte (choix explicite de
+-- Kroma, 13/09) : tant que Kromaddon ne comprend pas ce canal, le solde/main/
+-- historique KA ne repondent plus cote KromaddonGuildeux -- le temps que les
+-- deux addons soient a jour.
 --=============================================================================
 
-KG.HIDE_WINDOW = 60
-KG.sentTexts = KG.sentTexts or {}        -- { text=, t= } : mes envois recents, a cacher a l'echo
-KG.expectReplyFrom = KG.expectReplyFrom or {}   -- [nom] = heure de mon dernier envoi a ce nom
-KG.HIDDEN_REPLY_KINDS = {
-    ka_lookup = true, ka_unknown = true, ka_self = true, ka_unlinked = true, ka_notsynced = true,
-    roster_not_ready = true, ka_nologs = true, unlinked_info = true, linked = true, bad_main = true, ka_log = true,
-}
+KG.ADDON_PREFIX = "KROMAKG"
+KG.addonQueue = KG.addonQueue or {}
+KG.lastAddonSentAt = KG.lastAddonSentAt or -1e9
 
-function KG.NoteWhisperSent(text, to, now)
-    table.insert(KG.sentTexts, { text = text, t = now })
-    if to then KG.expectReplyFrom[KG.NormalizeName(to) or to] = now end
-    while #KG.sentTexts > 40 do table.remove(KG.sentTexts, 1) end
+function KG.QueueAddonMessage(target, message)
+    if not target or not message then return end
+    table.insert(KG.addonQueue, { to = target, text = message })
 end
 
-function KG.MasksWhispers()
-    local db = KromaddonGuildeuxDB or KG.GetDB()
-    return db.masquerWisps ~= false
+-- Rend le message envoye, ou nil. `now` et `send` sont injectables (tests).
+function KG.PumpAddonMessages(now, send, inCombat)
+    now = now or GetTime()
+    if #KG.addonQueue == 0 then return nil end
+    if inCombat == nil then inCombat = KG.AnyRaidMemberInCombat() end
+    if inCombat then return nil end
+    if now - KG.lastAddonSentAt < KG.WHISPER_GAP then return nil end
+    local m = table.remove(KG.addonQueue, 1)
+    KG.lastAddonSentAt = now
+    send = send or function(t, to) pcall(SendAddonMessage, KG.ADDON_PREFIX, t, "WHISPER", to) end
+    send(m.text, m.to)
+    return m
 end
 
--- L'echo de mon propre envoi (CHAT_MSG_WHISPER_INFORM) : cache si c'est un
--- texte que l'addon a envoye il y a moins de HIDE_WINDOW s (consomme).
-function KG.ShouldHideOutgoing(text, now)
-    if not KG.MasksWhispers() then return false end
-    for i, m in ipairs(KG.sentTexts) do
-        if m.text == text and now - m.t <= KG.HIDE_WINDOW then
-            table.remove(KG.sentTexts, i)
-            return true
-        end
-    end
-    return false
-end
-
--- Une reponse (CHAT_MSG_WHISPER) : cache si elle vient d'un nom a qui l'addon
--- a ecrit depuis peu ET qu'elle a la forme d'une reponse ?ka.
-function KG.ShouldHideIncoming(text, sender, now)
-    if not KG.MasksWhispers() then return false end
-    sender = KG.NormalizeName(sender)
-    local at = sender and KG.expectReplyFrom[sender]
-    if not at or now - at > KG.HIDE_WINDOW then return false end
-    local G = KG.Grammaire
-    local ev = G and G.ParseWhisper and G.ParseWhisper(text)
-    return ev ~= nil and KG.HIDDEN_REPLY_KINDS[ev.kind] == true
-end
-
--- Le filtre de ChatFrame. Deux signatures ont existe : (self, event, msg,
--- author, ...) depuis 3.x, (msg) avant ; on lit celle qu'on recoit.
-function KG.ChatFilter(a, b, c, d)
-    local event, msg, author
-    if type(a) == "table" then event, msg, author = b, c, d else msg, author = a, b end
-    if type(msg) ~= "string" then return false end
-    local now = (GetTime and GetTime()) or 0
-    if event == "CHAT_MSG_WHISPER_INFORM" or (event == nil and author == nil) then
-        return KG.ShouldHideOutgoing(msg, now)
-    end
-    return KG.ShouldHideIncoming(msg, author, now)
-end
-
-if ChatFrame_AddMessageEventFilter then
-    ChatFrame_AddMessageEventFilter("CHAT_MSG_WHISPER_INFORM", KG.ChatFilter)
-    ChatFrame_AddMessageEventFilter("CHAT_MSG_WHISPER", KG.ChatFilter)
-end
+-- Plus aucun masquage du chat (14/09) : KA parle par le canal d'addon,
+-- invisible par nature, et le seul chuchotement texte qui reste --
+-- « ?ka <Main> » de la porte des non lies -- doit etre VU des deux cotes
+-- (Kroma : « je veux les voir ces wisps »). Le mecanisme de 0.5.0
+-- (KG.ShouldHideOutgoing/Incoming, filtre de ChatFrame, db.masquerWisps) est
+-- retire.
 
 --=============================================================================
 -- Modules et evenements. Chaque module s'inscrit et recoit :
@@ -487,6 +488,7 @@ KG.eventFrame = frame
 for ev in pairs(KG.CHAT_CHANNELS) do frame:RegisterEvent(ev) end
 frame:RegisterEvent("CHAT_MSG_SYSTEM")
 frame:RegisterEvent("CHAT_MSG_WHISPER")
+frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("RAID_ROSTER_UPDATE")
@@ -498,7 +500,7 @@ frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 
 KG.inCombat = false
 
-frame:SetScript("OnEvent", function(self, event, arg1, arg2)
+frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
     local channel = KG.CHAT_CHANNELS[event]
     if channel then
         KG.Dispatch("OnChat", channel, arg1, KG.NormalizeName(arg2))
@@ -506,6 +508,13 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2)
         KG.Dispatch("OnSystem", arg1)
     elseif event == "CHAT_MSG_WHISPER" then
         KG.Dispatch("OnWhisper", arg1, KG.NormalizeName(arg2))
+    elseif event == "CHAT_MSG_ADDON" then
+        -- (prefix, message, channelType, sender). Un prefixe different n'est
+        -- pas a nous (un autre addon sur le meme canal) : on ne le transmet
+        -- meme pas a KA:HandleReply, qui pourrait mal l'interpreter.
+        if arg1 == KG.ADDON_PREFIX then
+            KG.Dispatch("OnAddonMessage", arg2, KG.NormalizeName(arg4))
+        end
     elseif event == "PLAYER_LOGIN" then
         KG.GetDB()
         KG.RequestGuildRoster(true)
@@ -543,6 +552,7 @@ frame:SetScript("OnUpdate", function(self, elapsed)
     -- complet : on le redemande (cadence ROSTER_RETRY, la fonction la tient).
     if not KG.rosterComplete then KG.RequestGuildRoster(false, now) end
     KG.PumpWhispers(now)
+    KG.PumpAddonMessages(now)
     KG.Dispatch("OnTick", now)
 end)
 
@@ -556,7 +566,6 @@ end)
 -- que le roster etait vide.
 function KG.DiagnosticLines()
     local lines = {}
-    local db = KG.GetDB()
     local guild = GetGuildInfo and GetGuildInfo("player")
     local inGuild = not IsInGuild or IsInGuild()
     local guildText
@@ -568,7 +577,7 @@ function KG.DiagnosticLines()
     for _ in pairs(KG.guildRanks) do n = n + 1 end
     table.insert(lines, string.format("roster : %d nom(s) avec un rang, %s ; rangs officier : %s",
         n, KG.rosterComplete and "complet" or "INCOMPLET (aucun hors-ligne vu, redemandé toutes les " .. KG.ROSTER_RETRY .. " s)",
-        table.concat(db.rangsOfficier or {}, ", ")))
+        table.concat(KG.OFFICER_RANK_NAMES, ", ")))
     if KG.InRaid() then
         local ml = KG.MasterLooter()
         for i = 1, GetNumRaidMembers() do
@@ -579,14 +588,15 @@ function KG.DiagnosticLines()
                 if name == ml then galon = galon .. ", maître du butin" end
                 local ok, why = KG.OfficerStatus(name)
                 local verdict = ok and "OFFICIER" or "non officier"
-                if ok and KG.guildRanks[name] == nil then verdict = "OFFICIER pour lire, pas pour ?ka" end
+                if ok and KG.guildRanks[name] == nil then verdict = "OFFICIER par son galon (rang de guilde inconnu : ?ka par le canal, sans risque)" end
                 table.insert(lines, string.format("raid : %s (%s) => %s (%s)", name, galon, verdict, why))
             end
         end
         local elu = KG.KA and KG.KA.Logic and KG.KA:Logic():Elect()
         local eluLine = "officier élu pour ?ka : " .. tostring(elu or "aucun")
-        if not elu and not KG.rosterComplete then
-            eluLine = eluLine .. " (roster incomplet : on n'écrit qu'à un officier de rang CONNU, un galon de raid ne suffit pas)"
+        if not elu then
+            eluLine = eluLine .. " (aucun officier de rang connu en ligne, et aucun galonné de rang inconnu dans le raid"
+                .. (KG.rosterComplete and ")" or " ; roster incomplet)")
         end
         table.insert(lines, eluLine)
     else
@@ -619,6 +629,14 @@ function KG.HandleSlash(msg)
     end
     if msg == "version" then
         KG.Print("version " .. tostring(KG.Version))
+        return
+    end
+    if msg == "cache" then
+        -- Reprend exactement ce que faisait le bouton « Vider le cache ?ka »
+        -- des Options, retire le 14/09 (Kroma : « pour vider le cache créer
+        -- une commande /kg cache »).
+        if KG.KA and KG.KA.Logic then KG.KA:Logic():ClearCache() end
+        KG.Print("cache ?ka vidé")
         return
     end
     if KG.ToggleWindow then KG.ToggleWindow() end

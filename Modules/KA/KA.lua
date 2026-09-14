@@ -24,7 +24,7 @@ KG.RegisterModule("KA", KA)
 KA.LOOKUP_GAP = 2            -- secondes entre deux « ?ka Nom »
 KA.LOOKUPS_PER_AUCTION = 10  -- jamais plus par enchere
 KA.CACHE_TTL = 6 * 3600      -- une reponse par nom et par soiree
-KA.REFRESH_GAP = 60          -- « Actualiser » : un par minute
+KA.REFRESH_GAP = 10          -- « Actualiser » : un toutes les 10 s (14/09, etait 60)
 KA.ASK_TIMEOUT = 20          -- sans reponse a mon « ?ka » : on reessaie plus tard
 KA.HISTORY_MAX = 200
 
@@ -32,18 +32,30 @@ KA.HISTORY_MAX = 200
 -- Logique pure
 --=============================================================================
 
--- opts : me, whisper(target, text), now(), isOfficer(name), onlineOfficers()
--- -> liste de noms connectes et officiers, raidMembers() -> set, raidLeader(),
+-- opts : me, sendAddon(target, text), now(), isOfficer(name), onlineOfficers()
+-- -> liste de noms connectes et officiers, officerKnown(name) -> true si son
+-- rang de guilde est connu (0.5.8 : un galon de rang inconnu est elu apres
+-- les officiers connus), raidMembers() -> set, raidLeader(),
 -- masterLooter(), inCombat(), getAuction() -> l'enchere courante ou nil,
 -- db (KromaddonGuildeuxDB), debug(text), onChange().
+--
+-- sendAddon (13/09, brief-kg-canal-addon-13-09.md) : mon ?ka, mes ?ka Nom et
+-- mon ?ka 20 logs partent par SendAddonMessage (canal KG.ADDON_PREFIX), plus
+-- par chuchotement texte -- AUCUN REPLI (choix explicite de Kroma). Les
+-- REPONSES, elles, arrivent par les deux points d'entree possibles (OnWhisper
+-- pour un Kromaddon pas encore a jour ou un ?ka tape a la main, OnAddonMessage
+-- pour un Kromaddon a jour) : meme grammaire, meme HandleReply, seul le
+-- transport CHANGE cote envoi.
 function KA.New(opts)
     opts = opts or {}
     local L = {
         me = opts.me or "?",
-        whisper = opts.whisper or function() end,
+        sendAddon = opts.sendAddon or function() end,
+        whisper = opts.whisper or function() end,   -- chuchotement TEXTE, visible : seulement « ?ka <Main> » (liaison)
         now = opts.now or function() return time() end,
         isOfficer = opts.isOfficer or function() return false end,
         onlineOfficers = opts.onlineOfficers or function() return {} end,
+        officerKnown = opts.officerKnown or function() return true end,
         raidMembers = opts.raidMembers or function() return {} end,
         raidLeader = opts.raidLeader or function() return nil end,
         masterLooter = opts.masterLooter or function() return nil end,
@@ -59,6 +71,11 @@ function KA.New(opts)
         askedOnce = false,
         lastRefreshAt = nil,
         exhausted = {},         -- officiers qui ont dit « pas encore synchronisé »
+        silent = {},            -- officiers qui n'ont pas repondu a mon KA (ASK_TIMEOUT) : les autres d'abord
+        logsAskedAt = nil,      -- dernier KA:LOGS:20 (une fois par REFRESH_GAP, plus « une fois par personnage »)
+        logsWanted = false,     -- « Actualiser » : redemander l'historique des que mon solde est revenu
+        logBatch = nil,         -- les lignes du KA:LOGS en cours, dans l'ordre de Kromaddon (le plus recent d'abord)
+        linkFeedback = nil,     -- la reponse de l'officier a « ?ka <Main> » (porte des non lies)
         cache = {},             -- [nom] = { solde=, main=, t= } ou { unknown=true, t= }
         pending = {},           -- noms a demander, dans l'ordre
         awaiting = {},          -- [nom] = heure de la demande
@@ -69,7 +86,57 @@ function KA.New(opts)
     }
     L.db.historique = L.db.historique or {}
     L.db.logsDemandes = L.db.logsDemandes or {}
-    return setmetatable(L, { __index = KA })
+    local self = setmetatable(L, { __index = KA })
+    self:RestoreSelfInfo()
+    return self
+end
+
+-- Le solde que je connais SURVIT a la deconnexion (13/09). Avant, il ne
+-- vivait qu'en memoire : a chaque connexion tout repartait de « inconnu »
+-- jusqu'a la reponse d'un officier a mon « ?ka » - et quand elle ne venait
+-- pas (test de Kroma, Kromalchib, 13/09 : « Max auto vide », « il passe pas
+-- seul »), tout ce qui depend du solde etait mort : Max auto, All In, le
+-- passe automatique. Le dernier solde connu est range dans la base sous MON
+-- nom, repris a la connexion tant qu'il a moins de KA.SELF_TTL, et marque
+-- `stale` jusqu'a ce qu'un officier le confirme (?ka) ou le corrige (un
+-- chuchotement de credit/debit porte le solde, un refus « T'as N » aussi).
+KA.SELF_TTL = 14 * 24 * 3600
+
+function KA:PersistSelfInfo()
+    if not self.selfInfo then return end
+    self.db.selfInfo = {
+        name = self.me, solde = self.selfInfo.solde, main = self.selfInfo.main,
+        marker = self.selfInfo.marker, t = self.now(),
+    }
+end
+
+function KA:RestoreSelfInfo()
+    local d = self.db.selfInfo
+    if type(d) ~= "table" or d.name ~= self.me or type(d.solde) ~= "number" then return false end
+    if not d.t or self.now() - d.t > KA.SELF_TTL then return false end
+    self.selfInfo = { solde = d.solde, main = d.main, marker = d.marker, t = d.t, stale = true }
+    self.selfState = "known"
+    return true
+end
+
+-- Un solde appris d'un officier autrement que par « ?ka » : le chuchotement
+-- d'un mouvement (« ... (Solde : N KA) », Kromaddon 3.9.12) ou un refus
+-- (« T'as N. C'est pas assez »). Il remplace ce qu'on croyait, et rend le
+-- solde « connu » s'il ne l'etait pas encore - le main, lui, n'est connu
+-- que par « ?ka » et reste ce qu'il etait.
+function KA:LearnSelfBalance(solde)
+    if type(solde) ~= "number" then return false end
+    if self.selfInfo then
+        self.selfInfo.solde = solde
+        self.selfInfo.t = self.now()
+        self.selfInfo.stale = nil
+    else
+        self.selfInfo = { solde = solde, main = nil, marker = nil, t = self.now() }
+    end
+    if self.selfState ~= "asked" then self.selfState = "known" end
+    self:PersistSelfInfo()
+    self.onChange()
+    return true
 end
 
 --=============================================================================
@@ -78,8 +145,12 @@ end
 
 -- En raid : les membres du raid qui sont officiers et connectes, chef de
 -- raid d'abord, puis maitre du butin, puis alphabetique. Hors raid : les
--- officiers connectes de la guilde. Ceux qui ont dit « pas encore
--- synchronisé » passent apres les autres.
+-- officiers connectes de la guilde. Un galon de rang de guilde inconnu
+-- (0.5.8 : autre guilde, roster muet) passe apres TOUS les officiers de rang
+-- connu, meme hors raid (un officier de ma guilde a surement Kromaddon et ma
+-- base ; un chef de raid inconnu, peut-etre pas) ; ceux qui n'ont pas
+-- repondu (silent) apres tous les autres, ceux qui ont dit « pas encore
+-- synchronisé » en dernier.
 function KA:Elect()
     local online = {}
     for _, n in ipairs(self.onlineOfficers()) do if n ~= self.me then online[n] = true end end
@@ -90,7 +161,9 @@ function KA:Elect()
         -- raid, maitre du butin, puis alphabetique.
         local r = 0
         if self.exhausted[n] then r = r + 100 end
+        if self.silent[n] then r = r + 50 end
         if not raid[n] then r = r + 10 end
+        if not self.officerKnown(n) then r = r + 15 end   -- apres tous les officiers de rang connu, meme hors raid
         if n == rl then r = r + 0 elseif n == ml then r = r + 1 else r = r + 2 end
         return r
     end
@@ -101,7 +174,15 @@ function KA:Elect()
         if ra ~= rb then return ra < rb end
         return a < b
     end)
-    return candidates[1]
+    if candidates[1] then return candidates[1] end
+    -- Personne (hors raid, ou raid sans galon connu) : le dernier officier qui
+    -- m'a repondu (14/09, Kroma : « quand j'actualise j'ai toujours "aucun
+    -- officier joignable" » -- Kromalchif, hors raid, avec Kromandant en
+    -- ligne dans une autre guilde). Un message d'addon a quelqu'un de
+    -- deconnecte ne coute rien : il se perd.
+    local last = self.db.lastOfficer
+    if last and last ~= self.me then return last end
+    return nil
 end
 
 --=============================================================================
@@ -112,9 +193,13 @@ function KA:AskSelf(force)
     local now = self.now()
     if force then
         if self.lastRefreshAt and now - self.lastRefreshAt < KA.REFRESH_GAP then
-            return false, "actualisation : une par minute"
+            return false, "actualisation : une toutes les " .. KA.REFRESH_GAP .. " s"
         end
         self.lastRefreshAt = now
+        -- « Actualiser » rafraichit aussi l'historique (14/09 : « le montant
+        -- est toujours bon, mais l'historique non ») : des que le solde est
+        -- revenu, KA:LOGS:20 repart.
+        self.logsWanted = true
     end
     if self.selfState == "asked" and self.askedAt and now - self.askedAt < KA.ASK_TIMEOUT then
         return false, "demande déjà en vol"
@@ -128,8 +213,8 @@ function KA:AskSelf(force)
     if self.askedTo ~= elu then self.awaiting = {} end   -- les demandes en vol vers l'ancien elu ne reviendront pas de lui
     self.askedTo, self.askedAt, self.askedOnce = elu, now, true
     self.selfState = "asked"
-    self.whisper(elu, "?ka")
-    self.debug("?ka -> " .. elu)
+    self.sendAddon(elu, "KA")
+    self.debug("KA -> " .. elu)
     self.onChange()
     return true, elu
 end
@@ -220,6 +305,10 @@ function KA:Pump()
     -- Ma propre demande sans reponse : on la laisse retomber pour pouvoir
     -- reessayer (l'officier a peut-etre change).
     if self.selfState == "asked" and self.askedAt and now - self.askedAt >= KA.ASK_TIMEOUT then
+        -- Muet (pas de Kromaddon, ou pas a jour) : la prochaine demande ira
+        -- d'abord a un autre, s'il y en a un ; il redevient candidat des
+        -- qu'il repond a quelque chose.
+        if self.askedTo then self.silent[self.askedTo] = true end
         self.selfState = "idle"
         self.onChange()
     end
@@ -233,8 +322,8 @@ function KA:Pump()
     self.awaiting[name] = now
     self.lastLookupAt = now
     self.lookupsThisAuction = self.lookupsThisAuction + 1
-    self.whisper(elu, "?ka " .. name)
-    self.debug("?ka " .. name .. " -> " .. elu)
+    self.sendAddon(elu, "KA:" .. name)
+    self.debug("KA:" .. name .. " -> " .. elu)
     return name
 end
 
@@ -247,11 +336,27 @@ end
 -- Les reponses (G.ParseWhisper)
 --=============================================================================
 
+-- Deux lignes sont le MEME mouvement si auteur, delta, total et raison
+-- concordent -- et la date aussi quand les deux en ont une (une ligne
+-- « live », venue d'un chuchotement de credit, n'a pas de date : c'est la
+-- ligne de KA:LOGS qui la lui donne). Le total est dans la cle (14/09) :
+-- deux « +1 test » de Kromandant dans la meme minute ont des totaux
+-- differents, et l'ancienne cle (sans total) jetait le second comme un
+-- doublon -- « il manque des mouvements ».
+function KA.SameMovement(a, b)
+    if a.author ~= b.author or a.delta ~= b.delta or a.reason ~= b.reason then return false end
+    if a.total ~= nil and b.total ~= nil and a.total ~= b.total then return false end
+    if a.date and a.date ~= "" and b.date and b.date ~= "" and a.date ~= b.date then return false end
+    return true
+end
+
 function KA:AddHistory(main, entry)
     local h = self.db.historique[main]
     if not h then h = {}; self.db.historique[main] = h end
-    for _, x in ipairs(h) do
-        if x.date == entry.date and x.author == entry.author and x.delta == entry.delta and x.reason == entry.reason then
+    for i, x in ipairs(h) do
+        if KA.SameMovement(x, entry) then
+            -- La version datee (KA:LOGS) remplace la version live sans date.
+            if (not x.date or x.date == "") and entry.date and entry.date ~= "" then h[i] = entry end
             return false
         end
     end
@@ -260,10 +365,41 @@ function KA:AddHistory(main, entry)
     return true
 end
 
+-- Un lot KA:LOGS arrive ligne par ligne, du plus recent au plus ancien : il
+-- fait autorite sur ce qu'il couvre. Le lot prend la tete de l'historique
+-- dans l'ordre de Kromaddon ; ce qui etait deja la et que le lot ne
+-- contient pas reste derriere (les lignes vivantes plus recentes que le lot
+-- gardent leur place devant lui).
+function KA:MergeLogBatch(main)
+    local batch = self.logBatch
+    if not batch or #batch == 0 then return end
+    local old = self.db.historique[main] or {}
+    local merged, seen = {}, {}
+    -- Les lignes vivantes arrivees APRES le debut du lot (t > batch.t) : devant.
+    for _, x in ipairs(old) do
+        if x.live and x.t and batch.t and x.t > batch.t then
+            local dup = false
+            for _, b in ipairs(batch) do if KA.SameMovement(b, x) then dup = true; break end end
+            if not dup then table.insert(merged, x); seen[x] = true end
+        end
+    end
+    for _, b in ipairs(batch) do table.insert(merged, b) end
+    for _, x in ipairs(old) do
+        if not seen[x] then
+            local dup = false
+            for _, b in ipairs(batch) do if KA.SameMovement(b, x) then dup = true; break end end
+            if not dup then table.insert(merged, x) end
+        end
+    end
+    while #merged > KA.HISTORY_MAX do table.remove(merged) end
+    self.db.historique[main] = merged
+end
+
 function KA:HandleReply(ev, sender)
     if not ev then return "ignoré" end
     local kind = ev.kind
     local fromElu = (sender == self.askedTo)
+    if sender then self.silent[sender] = nil end
 
     if kind == "linked" then
         -- « T'es lié à X » est la reponse ATTENDUE quand le joueur, non lie,
@@ -285,8 +421,15 @@ function KA:HandleReply(ev, sender)
     if kind == "movement" then
         if not self.isOfficer(sender) then return "ignoré : mouvement d'un non-officier" end
         local main = (self.selfInfo and self.selfInfo.main) or self.me
-        self:AddHistory(main, { date = "", author = sender, delta = ev.delta, total = nil, reason = ev.reason, live = true, t = self.now() })
-        if self.selfInfo then self.selfInfo.solde = (self.selfInfo.solde or 0) + ev.delta end
+        self:AddHistory(main, { date = "", author = sender, delta = ev.delta, total = ev.solde, reason = ev.reason, live = true, t = self.now() })
+        if ev.solde then
+            -- Le chuchotement dit le solde APRES mouvement (3.9.12) : on le
+            -- prend tel quel plutot que d'additionner un delta a une valeur
+            -- qu'on n'avait peut-etre pas.
+            self:LearnSelfBalance(ev.solde)
+            return "mouvement " .. tostring(ev.delta) .. " (solde " .. tostring(ev.solde) .. ")"
+        end
+        if self.selfInfo then self.selfInfo.solde = (self.selfInfo.solde or 0) + ev.delta; self:PersistSelfInfo() end
         self.onChange()
         return "mouvement " .. tostring(ev.delta)
     end
@@ -295,6 +438,10 @@ function KA:HandleReply(ev, sender)
     if kind == "ka_self" then
         self.selfState = "known"
         self.selfInfo = { solde = ev.solde, main = ev.main, marker = ev.marker, t = self.now() }
+        self.linkFeedback = nil
+        self:PersistSelfInfo()
+        self.db.lastOfficer = sender   -- le dernier qui m'a repondu : repli d'election (KA:Elect)
+        if self.logsWanted then self:RequestLogs(true) end
         self.onChange()
         return "connu : " .. tostring(ev.solde) .. " KA (Main : " .. tostring(ev.main) .. ")"
     end
@@ -305,6 +452,9 @@ function KA:HandleReply(ev, sender)
         return "non lié : aucun ?ka Nom ne partira"
     end
     if kind == "ka_notsynced" or kind == "roster_not_ready" then
+        if kind == "roster_not_ready" and self.selfState == "unlinked" then
+            self.linkFeedback = "roster de guilde pas encore synchronisé chez l'officier : réessaie dans une minute"
+        end
         self.exhausted[sender] = true
         self.selfState = "idle"
         self.onChange()
@@ -324,7 +474,15 @@ function KA:HandleReply(ev, sender)
     end
     if kind == "ka_log" then
         local main = (self.selfInfo and self.selfInfo.main) or self.me
-        self:AddHistory(main, { date = ev.date, author = ev.author, delta = ev.delta, total = ev.total, reason = ev.reason, t = self.now() })
+        local entry = { date = ev.date, author = ev.author, delta = ev.delta, total = ev.total, reason = ev.reason, t = self.now() }
+        if self.logBatch then
+            local dup = false
+            for _, b in ipairs(self.logBatch) do if KA.SameMovement(b, entry) then dup = true; break end end
+            if not dup then table.insert(self.logBatch, entry) end
+            self:MergeLogBatch(main)
+        else
+            self:AddHistory(main, entry)
+        end
         self.onChange()
         return "ligne d'historique"
     end
@@ -332,7 +490,9 @@ function KA:HandleReply(ev, sender)
         return "historique vide"
     end
     if kind == "bad_main" then
-        return "mauvais nom de main (?)"
+        self.linkFeedback = "Mauvais nom de main : vérifie l'orthographe"
+        self.onChange()
+        return "mauvais nom de main"
     end
     return "ignoré : " .. tostring(kind)
 end
@@ -357,15 +517,40 @@ function KA:OnAuctionClosed(e)
     self.onChange()
 end
 
--- « ?ka 20 logs », une fois par personnage (§ 6.3).
-function KA:RequestLogs()
+-- « ?ka 20 logs » (§ 6.3). Etait « une fois par personnage », pour
+-- toujours (db.logsDemandes) : l'historique ne se remettait jamais a jour
+-- d'une session a l'autre (14/09, « il manque des mouvements »). Maintenant :
+-- une fois par REFRESH_GAP, a l'ouverture de l'onglet et a chaque
+-- « Actualiser » (force), et les lignes recues font autorite (MergeLogBatch).
+function KA:RequestLogs(force)
     if not self:MayLookup() then return false end
-    if self.db.logsDemandes[self.me] then return false end
+    local now = self.now()
+    if self.logsAskedAt and now - self.logsAskedAt < KA.REFRESH_GAP then return false end
     local elu = self.askedTo or self:Elect()
     if not elu then return false end
-    self.db.logsDemandes[self.me] = true
-    self.whisper(elu, "?ka 20 logs")
+    self.logsAskedAt, self.logsWanted = now, false
+    self.logBatch = { t = now }
+    self.sendAddon(elu, "KA:LOGS:20")
     return true
+end
+
+-- La porte des non lies (14/09, Kroma : « pour un joueur non lie je veux
+-- KromaddonGuildeux completement inoperant avec juste un champ texte pour
+-- qu'ils saisissent le nom de leur main et un bouton valider qui m'envoie
+-- ?ka NomDuMain (je veux les voir ces wisps) ») : le seul chuchotement
+-- TEXTE que l'addon envoie encore, visible des deux cotes, a l'officier elu.
+-- Kromaddon repond « T'es lié à X » (le ?ka repart tout seul, HandleReply)
+-- ou « Mauvais Nom de main ».
+function KA:LinkMain(name)
+    name = name and string.gsub(name, "^%s*#?(.-)%s*$", "%1") or ""
+    if name == "" then self.linkFeedback = "tape le nom de ton main"; self.onChange(); return false, "nom vide" end
+    local elu = self:Elect()
+    if not elu then self.linkFeedback = "aucun officier joignable"; self.onChange(); return false, "aucun officier joignable" end
+    self.whisper(elu, "?ka " .. name)
+    self.linkFeedback = "demande envoyée à " .. elu .. " : ?ka " .. name
+    self.debug("?ka " .. name .. " -> " .. elu .. " (chuchotement)")
+    self.onChange()
+    return true, elu
 end
 
 function KA:History()
@@ -380,11 +565,12 @@ end
 function KA:StateText()
     if self.linkedAlarm then return self.linkedAlarm end
     if self.selfState == "known" and self.selfInfo then
-        return string.format("%d KA (Main : %s)", self.selfInfo.solde or 0, self.selfInfo.main or "?")
+        return string.format("%d KA (Main : %s)%s", self.selfInfo.solde or 0, self.selfInfo.main or "?",
+            self.selfInfo.stale and " - dernier connu, Actualiser pour confirmer" or "")
     end
     if self.selfState == "asked" then return "demande envoyée à " .. tostring(self.askedTo) .. "…" end
     if self.selfState == "unlinked" then return "personnage non lié : envoie « ?ka #NomDeTonMain » à un officier" end
-    if self.selfState == "noofficer" then return "aucun officier joignable" end
+    if self.selfState == "noofficer" then return "aucun officier joignable (hors raid : un officier connecté de ta guilde, ou le dernier qui a répondu)" end
     return "solde inconnu (clique Actualiser)"
 end
 
@@ -417,6 +603,8 @@ function KA:Logic()
         inCombat = KG.AnyRaidMemberInCombat,
         getAuction = function() return KG.Encheres and KG.Encheres.S and KG.Encheres.S.current or nil end,
         db = KG.GetDB(),
+        sendAddon = KG.QueueAddonMessage,
+        officerKnown = function(name) return KG.IsKnownOfficer(name) == true end,
         debug = function(text) KG.Debug("KA", KG.PlayerName(), text, "envoyé") end,
         onChange = function() KA:Refresh() end,
     })
@@ -447,6 +635,20 @@ function KA:OnWhisper(text, sender)
     if not ev or ev.kind == "nudge" or ev.kind == "pass_confirm" then return end
     local verdict = self:Logic():HandleReply(ev, sender)
     KG.Debug("WHISPER", sender, text, verdict)
+end
+
+-- Le nouveau canal (13/09, brief-kg-canal-addon-13-09.md) : Kromaddon repond
+-- avec le MEME texte qu'a un ?ka chuchote (KG.Grammaire.ParseWhisper) -- seul
+-- le transport (SendAddonMessage, jamais affiche, jamais tapable a la main)
+-- change. HandleReply, le cache, MayLookup, les delais : rien ne bouge, seul
+-- ce point d'entree est nouveau. arg1 (le prefixe) est deja verifie par
+-- Core/Init.lua avant l'appel : ici, `message` est deja LE texte de reponse.
+function KA:OnAddonMessage(message, sender)
+    if type(message) ~= "string" then return end
+    local ev = KG.Grammaire.ParseWhisper(message)
+    if not ev then return end
+    local verdict = self:Logic():HandleReply(ev, sender)
+    KG.Debug("ADDON", sender, message, verdict)
 end
 
 function KA:OnAuctionEffect(kind, data)
@@ -507,9 +709,11 @@ function KA:Build(panel)
 end
 
 function KA:Refresh()
+    local L = self:Logic()
+    -- La porte des non lies (Core/UI.lua) suit l'etat, onglet construit ou pas.
+    if KG.SetGate then KG.SetGate(L.selfState == "unlinked", L) end
     local W = self.widgets
     if not W or not W.child then return end
-    local L = self:Logic()
     W.solde:SetText(L:StateText())
     W.marker:SetText(L:MarkerText())
     local hist = L:History()

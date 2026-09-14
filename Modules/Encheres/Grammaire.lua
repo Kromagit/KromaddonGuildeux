@@ -324,6 +324,14 @@ function G.ParseWhisper(text)
     end
     if a then return { kind = "ka_log", date = a, author = b, delta = tonumber(c), total = tonumber(d), reason = e } end
     -- [KoinApogee] Tu reçois 300 KA pour Raid : 8/12HC
+    -- Depuis Kromaddon 3.9.12 (#7) le chuchotement finit par le solde :
+    -- [KoinApogee] Tu reçois 300 KA pour Raid : 8/12HC (Solde : 6354 KA)
+    -- Le suffixe est detache AVANT de lire le reste (sinon la raison le
+    -- gardait - « test (Solde : 9965 KA) » dans l'historique de Kromalchib le
+    -- 13/09 - et un mouvement SANS raison n'etait plus lu du tout), et le
+    -- solde est rendu : c'est la valeur la plus fraiche qu'on puisse avoir.
+    local body, solde = string.match(s, "^(.-) %(Solde : (%-?%d+) KA%)$")
+    if body then s = body; solde = tonumber(solde) else solde = nil end
     a, b, c = string.match(s, "^%[KoinApogee%] Tu (%S+) (%d+) KA pour (.+)$")
     if not a then
         a, b = string.match(s, "^%[KoinApogee%] Tu (%S+) (%d+) KA$")
@@ -332,7 +340,7 @@ function G.ParseWhisper(text)
     if a then
         local delta
         if a == "reçois" then delta = tonumber(b) elseif a == "perds" then delta = -tonumber(b) end
-        if delta then return { kind = "movement", delta = delta, reason = c } end
+        if delta then return { kind = "movement", delta = delta, reason = c, solde = solde } end
     end
     return nil
 end

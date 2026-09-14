@@ -50,6 +50,9 @@ function B.New(opts)
         now = opts.now or function() return time() end,
         etat = opts.etat,
         kaSelf = opts.kaSelf or function() return nil end,
+        -- Un solde appris au passage (refus « T'as N. C'est pas assez ») :
+        -- rendu au module KA, qui le garde (13/09).
+        kaLearn = opts.kaLearn or function() end,
         inGroup = opts.inGroup or function() return true end,
         alert = opts.alert or function() end,
         state = "idle",         -- "idle" | "sent"
@@ -148,16 +151,43 @@ function B:BidClick(amount)
     return self:SendBid(amount, false)
 end
 
--- Le clic sur « Bid Min » : le min requis de mon palier, calcule A L'INSTANT
--- du clic (pas le chiffre affiche dans le champ, qui peut avoir une image de
--- retard), avec les memes refus que « Miser ». Un seul clic : le champ montre
--- deja le min, le second clic de l'ancien « Mise Min » ne protegeait de rien.
-function B:BidMinClick()
+-- Ce que « Bid Min » PEUT proposer, compte tenu de mon solde (14/09, Kroma :
+-- « sur un perso avec 9966 KA le bouton propose "Bid 10966" »). Le min requis
+-- ne regarde que la meilleure mise ; le bouton, lui, ne doit jamais tendre un
+-- montant que je ne peux pas payer :
+--   { kind = "min",   amount = min }   le min requis est payable (ou solde inconnu)
+--   { kind = "allin", amount = solde } le min depasse mon solde, mais mon solde
+--                                      depasse encore la meilleure mise : seul
+--                                      « all in » passe chez l'officier
+--   { kind = "none",  why = ... }      rien a proposer : deja vainqueur, ou
+--                                      solde sous la meilleure mise
+function B:BidMinOffer()
     local ok, why = self:CanBid()
-    if not ok then return "refused", why end
+    if not ok then return { kind = "none", why = why } end
     local min = self:SuggestedBid()
-    if not min then return "refused", "aucune enchère" end
-    return self:BidClick(min)
+    if not min then return { kind = "none", why = "aucune enchère" } end
+    if self:IsTopOfMyTier() then return { kind = "none", why = "déjà vainqueur" } end
+    local solde = self:Solde()
+    if not solde or min <= solde then return { kind = "min", amount = min } end
+    local top = E.TopBid(self:Current(), self:MyTier())
+    if solde > top then return { kind = "allin", amount = solde } end
+    return { kind = "none", why = string.format("solde insuffisant : %d, meilleure mise %d", solde, top) }
+end
+
+-- Le clic sur « Bid Min » : l'offre du moment, calculee A L'INSTANT du clic
+-- (pas le chiffre affiche dans le champ, qui peut avoir une image de
+-- retard), avec les memes refus que « Miser ». Un seul clic : le champ montre
+-- deja l'offre, le second clic de l'ancien « Mise Min » ne protegeait de rien.
+function B:BidMinClick()
+    local offer = self:BidMinOffer()
+    if offer.kind == "min" then return self:BidClick(offer.amount) end
+    if offer.kind == "allin" then return self:AllInClick() end
+    if offer.why == "déjà vainqueur" then
+        self.feedback = { text = "tu es déjà vainqueur de ton palier", color = "yellow" }
+    elseif string.find(offer.why, "solde insuffisant", 1, true) then
+        self.feedback = { text = offer.why, color = "red" }
+    end
+    return "refused", offer.why
 end
 
 -- Mon solde tel que ?ka l'a dit ; nil tant qu'on ne le connait pas.
@@ -276,9 +306,16 @@ end
 -- Le passe automatique (12/09, Kroma : « quand une enchere depasse le total
 -- de KA d'un joueur, il passe ») : j'ai une mise active dans mon palier, on
 -- m'a depasse, et le min requis est au-dessus de mon solde — je ne peux plus
--- suivre, l'officier refuserait (« T'as N. C'est pas assez »), autant passer
--- tout de suite plutot que d'attendre son « BID OU PASSE ». Une fois par
--- enchere. Sans mise de ma part : rien a retirer, rien ne part.
+-- suivre normalement. MAIS (14/09, Kroma sur un cas vu en jeu : « le min
+-- requis est inferieur au total de Kromalchib MAIS son all in est superieur
+-- au bid actuel, donc il a le droit d'all in meme s'il atteint pas le min
+-- requis ») un All In reste un coup legal tant que mon solde depasse la
+-- meilleure mise de mon palier (la regle d'`AllInClick` : `solde > top`) —
+-- dans ce cas-la, all in automatique plutot que passe. Seulement quand le
+-- solde n'atteint meme pas la meilleure mise, l'officier refuserait
+-- jusqu'a l'All In lui-meme (« il en faut plus ») : la, on passe. Une fois
+-- par enchere (l'une ou l'autre). Sans mise de ma part : rien a retirer,
+-- rien ne part.
 function B:AutoPassTick()
     local e = self:Current()
     if not e or e.statut ~= "ouverte" then return nil end
@@ -286,11 +323,25 @@ function B:AutoPassTick()
     if self.passState ~= "idle" or self.state == "sent" then return nil end
     if not self.inGroup() then return nil end
     local l = self:MyLine()
-    if not (l and E.BidActive(l) and (l.tier or e.palierDefaut) == self:MyTier()) then return nil end
+    local tier = self:MyTier()
+    if not (l and E.BidActive(l) and (l.tier or e.palierDefaut) == tier) then return nil end
     if self:IsTopOfMyTier() then return nil end
     local solde = self:Solde()
     local min = self:SuggestedBid()
     if not solde or not min or min <= solde then return nil end
+    local top = E.TopBid(e, tier)
+    if self:CanBid() and solde > top then
+        self.autoPassedSerial = e.serial
+        self.autoNextAt = nil
+        -- Deja actif dans CE palier (verifie ci-dessus) : pas besoin de
+        -- reposer « ms »/« os », l'officier le sait deja.
+        self.send("all in")
+        self.state, self.sentAt, self.autoSent = "sent", self.now(), false
+        local text = string.format("min requis %d > ton solde %d, mais all in encore valable (%d) : all in automatique", min, solde, solde)
+        self.feedback = { text = text, color = "yellow" }
+        self.alert(text)
+        return "send"
+    end
     self.autoPassedSerial = e.serial
     self.autoNextAt = nil
     local action = self:PasseClick()
@@ -417,6 +468,9 @@ function B:OnEffect(kind, data)
         self.state, self.sentAt, self.autoSent = "idle", nil, false
         self.feedback = { text = "mise passée : " .. tostring(data.amount) .. " " .. string.upper(data.tier or ""), color = "green" }
         self.nudge = nil
+        -- (14/09) « Confirmer le passe » ne survit pas a une mise de ma part :
+        -- j'ai remise, le passe repart de zero.
+        if self.passState == "confirm" then self.passState = "idle" end
     elseif kind == "mine_refused" then
         self.state, self.sentAt = "idle", nil
         if self.autoSent then
@@ -430,7 +484,10 @@ function B:OnEffect(kind, data)
         local why = data and data.why
         local text
         if why == "step" then text = string.format("refusée : c'est par %d, %d minimum", data.step or 0, data.min or 0)
-        elseif why == "balance" then text = string.format("refusée : t'as %d, c'est pas assez", data.have or 0)
+        elseif why == "balance" then
+            text = string.format("refusée : t'as %d, c'est pas assez", data.have or 0)
+            -- L'officier vient de me dire mon solde : autant le garder.
+            if type(data.have) == "number" then self.kaLearn(data.have) end
         elseif why == "self" then text = "refusée : t'es déjà vainqueur"
         elseif why == "allin" then text = "refusée : il en faut plus"
         elseif why == "marker" then text = "ignorée : pas de marqueur Naxx/Uldu"
@@ -467,6 +524,11 @@ function B:Tick(now)
     end
     self:AutoPassTick()
     self:AutoTick(now)
+    -- (14/09, Kroma : « quand un joueur passe en etant vainqueur, le bouton
+    -- Confirmer passe devrait se reinitialiser si un joueur (lui ou un autre)
+    -- bid au-dessus ») : depasse, je ne suis plus vainqueur, un simple
+    -- « passe » suffit de nouveau.
+    if self.passState == "confirm" and not self:IsTopOfMyTier() then self.passState = "idle" end
     if self.passState == "sent" and self.passSentAt and now - self.passSentAt >= B.REPLY_TTL then
         self.passState, self.passSentAt = "idle", nil
         self.feedback = { text = "pas de réponse de l'officier", color = "yellow" }
@@ -616,19 +678,24 @@ if KG.Frame then
             local serial = e and e.serial or -1
             -- Le champ Montant : le min requis, sauf si le joueur y tape.
             if W.editedSerial ~= serial then W.editedSerial = nil end
+            -- (14/09) jamais un montant que je ne peux pas payer : l'offre de
+            -- « Bid Min » (min payable, sinon all in, sinon rien).
+            local offer = logic:BidMinOffer()
             if not W.editedSerial and not montant:HasFocus() then
-                local min = logic:SuggestedBid()
-                local txt = min and tostring(min) or ""
+                local txt = offer.amount and tostring(offer.amount) or ""
                 if montant:GetText() ~= txt then W.settingText = true; montant:SetText(txt); W.settingText = false end
             end
             -- Un EditBox n'a ni Enable ni Disable en 3.3.5a (Button seulement) :
             -- c'est le bouton Miser qui se grise, le champ reste lisible.
             local ok, why = logic:CanBid()
-            if ok then miser:Enable(); bidMin:Enable() else miser:Disable(); bidMin:Disable() end
-            miser.tooltip, bidMin.tooltip = why, why
-            -- Le bouton dit ce qu'il enverrait : « Bid 125 » — sans enchere, « Bid Min ».
-            local sug = ok and logic:SuggestedBid() or nil
-            bidMin:SetText(sug and ("Bid " .. sug) or "Bid Min")
+            if ok then miser:Enable() else miser:Disable() end
+            miser.tooltip = why
+            -- Le bouton dit ce qu'il enverrait : « Bid 125 », « All in 9966 » —
+            -- rien a proposer (deja vainqueur, solde insuffisant, sans enchere) :
+            -- « Bid Min » grise, la raison en infobulle.
+            if offer.kind == "min" then bidMin:Enable(); bidMin:SetText("Bid " .. offer.amount); bidMin.tooltip = nil
+            elseif offer.kind == "allin" then bidMin:Enable(); bidMin:SetText("All in " .. offer.amount); bidMin.tooltip = "le min requis dépasse ton solde : all in"
+            else bidMin:Disable(); bidMin:SetText("Bid Min"); bidMin.tooltip = offer.why end
             cbMS:SetChecked(logic.tierChoice ~= "os")
             cbOS:SetChecked(logic.tierChoice == "os")
             -- Le champ Max : le max arme, sinon mon solde (pre-rempli, pas arme).
